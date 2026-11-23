@@ -1,0 +1,119 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─── 1. Quality Assurance & Automated Testing ───────────────────────
+  validate-and-test:
+    name: Lint, Test & Build Verification
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      # ─── Backend Validation ───
+      - name: Install Backend Dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Validate Prisma Schema
+        working-directory: backend
+        run: npx prisma validate
+
+      - name: Generate Prisma Client
+        working-directory: backend
+        run: npx prisma generate
+
+      - name: Run Backend Test Suites (Unit + Integration)
+        working-directory: backend
+        env:
+          NODE_ENV: test
+          PORT: 3001
+          DATABASE_URL: "mysql://mock_user:mock_pass@localhost:3306/missive_seo_test"
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: 6379
+          JWT_SECRET: "e4b7a1c8f92d0e3b6a5f8c1d4e7a0b3f6c9e2a5d8b1f4c7e0a3d6f9b2c5e8a1d"
+          REFRESH_TOKEN_SECRET: "a9d2f5e8b1c4a7d0e3f6a9b2c5e8a1d4f7b0e3c6a9d2f5e8b1c4a7d0e3f6a9b2"
+          COOKIE_SECRET: "1f7c8b4e9a0d2f5e8b1c4a7d0e3f6a9b"
+          ENCRYPTION_KEY: "1f7c8b4e9a0d2f5e8b1c4a7d0e3f6a9b2c5e8a1d4f7b0e3c6a9d2f5e8b1c4a7d"
+        run: npm test
+
+      # ─── Frontend Validation ───
+      - name: Install Frontend Dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build Frontend for Production
+        working-directory: frontend
+        env:
+          VITE_API_BASE_URL: "/api/v1"
+        run: npm run build
+
+  # ─── 2. Staging Deployment ──────────────────────────────────────────
+  deploy-staging:
+    name: Deploy to Staging
+    needs: validate-and-test
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://staging-seo.missivedigital.com
+
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+
+      - name: Deploy to Staging Cluster
+        run: |
+          echo "Deploying release to Staging environment..."
+          # Secure SSH / Container deployment steps go here
+
+  # ─── 3. Production Deployment (Manual Approval Gate Required) ───────
+  deploy-production:
+    name: Deploy to Production
+    needs: validate-and-test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://seo.missivedigital.com
+
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+
+      - name: Execute Zero-Downtime Production Deployment
+        run: |
+          echo "Executing production release with zero-downtime migration..."
+          # Database migration deploy: npx prisma migrate deploy
+          # PM2 zero-downtime reload: pm2 reload ecosystem.config.cjs

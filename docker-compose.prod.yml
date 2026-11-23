@@ -1,0 +1,126 @@
+# missive-seo-intelligence/docker-compose.prod.yml
+# Production Containerized Architecture for Missive SEO Intelligence Platform.
+# Separates Web API, Background Workers, MySQL, Redis, and Nginx.
+
+version: '3.8'
+
+services:
+  # ─── Database ───────────────────────────────────────────────────────
+  db:
+    image: mysql:8.0
+    container_name: missive-prod-db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME:-missive_seo}
+      MYSQL_USER: ${DB_USER:-missive_app}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - prod_mysql_data:/var/lib/mysql
+    networks:
+      - internal_net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Redis (BullMQ Queue Store) ────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: missive-prod-redis
+    restart: always
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --appendonly yes
+      --maxmemory 2gb
+      --maxmemory-policy noeviction
+    volumes:
+      - prod_redis_data:/data
+    networks:
+      - internal_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Backend Web API (HTTP Server) ──────────────────────────────────
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: missive-prod-api
+    restart: always
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - prod_report_storage:/var/lib/missive-seo/reports
+    networks:
+      - internal_net
+      - edge_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ─── Background Workers (BullMQ Processing) ─────────────────────────
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: missive-prod-workers
+    command: ["npm", "run", "workers"]
+    restart: always
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - prod_report_storage:/var/lib/missive-seo/reports
+    networks:
+      - internal_net
+
+  # ─── Frontend & Nginx Edge Reverse Proxy ────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: missive-prod-web
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+    networks:
+      - edge_net
+
+volumes:
+  prod_mysql_data:
+  prod_redis_data:
+  prod_report_storage:
+
+networks:
+  internal_net:
+    internal: true
+  edge_net:

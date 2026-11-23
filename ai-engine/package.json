@@ -1,0 +1,22 @@
+{
+  "name": "missive-seo-ai-engine",
+  "version": "1.0.0",
+  "description": "Missive SEO Intelligence Platform - Local AI Engine (Ollama)",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest --forceExit"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

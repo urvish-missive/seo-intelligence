@@ -1,0 +1,6 @@
+{
+  "name": "missive-seo-shared",
+  "version": "1.0.0",
+  "description": "Shared constants and schemas for Missive SEO platform",
+  "type": "module"
+}

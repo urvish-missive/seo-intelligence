@@ -1,0 +1,1681 @@
+// Prisma Schema — Missive SEO Intelligence Platform
+// Database: MySQL 8.0+
+// Generator: Prisma Client JS
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────────────────────────────
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+  DEACTIVATED
+}
+
+enum WorkspaceStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+enum MembershipStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+enum ClientStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum WebsiteStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum IntegrationType {
+  GA4
+  GSC
+  CLARITY
+}
+
+enum IntegrationStatus {
+  NOT_CONNECTED
+  CONNECTING
+  CONNECTED
+  SYNCING
+  FAILED
+  EXPIRED
+  REQUIRES_ATTENTION
+  DISCONNECTED
+}
+
+enum OAuthStatus {
+  CONNECTED
+  EXPIRED
+  REVOKED
+}
+
+enum SyncJobType {
+  GA4_HISTORICAL
+  GA4_INCREMENTAL
+  GSC_HISTORICAL
+  GSC_INCREMENTAL
+  CLARITY_SYNC
+  REPORT_GENERATION
+}
+
+enum SyncJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum ReportType {
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  CUSTOM
+  MONTHLY_SEO
+  WEBSITE_PERFORMANCE
+  KEYWORD_OPPORTUNITY
+  TRAFFIC_DROP
+  CLARITY_BEHAVIOUR
+}
+
+enum ReportFormat {
+  PDF
+  EXCEL
+  BOTH
+}
+
+enum ReportStatus {
+  PENDING
+  GENERATING
+  COMPLETED
+  FAILED
+}
+
+enum ConversationRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum MCPTransport {
+  STDIO
+  STREAMABLE_HTTP
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// AUTHENTICATION & WORKSPACE
+// ─────────────────────────────────────────────────────────────────────
+
+model User {
+  id              String          @id @default(uuid())
+  name            String          @db.VarChar(100)
+  email           String          @unique
+  passwordHash    String
+  avatar          String?         @db.VarChar(500)
+  status          UserStatus      @default(ACTIVE)
+  emailVerifiedAt DateTime?
+  lastLoginAt     DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  ownedWorkspaces     Workspace[]      @relation("WorkspaceOwner")
+  memberships         Membership[]
+  refreshTokens       RefreshToken[]
+  auditLogs           AuditLog[]
+  conversations       AIConversation[]
+  sentInvitations     Invitation[]     @relation("InvitedByUser")
+  createdClients      Client[]         @relation("ClientCreatedBy")
+  createdWebsites           Website[]           @relation("WebsiteCreatedBy")
+  createdClarityConnections ClarityConnection[] @relation("ClarityConnectionCreatedBy")
+  clientMemberships         ClientMember[]      @relation("ClientMemberUser")
+  assignedMemberships ClientMember[]   @relation("ClientMemberAssignedBy")
+  seoFindingHistories SEOFindingHistory[]
+
+  @@map("users")
+  @@index([email])
+  @@index([status])
+}
+
+model Workspace {
+  id          String          @id @default(uuid())
+  name        String          @db.VarChar(100)
+  slug        String          @unique @db.VarChar(100)
+  description String?         @db.Text
+  logo        String?         @db.VarChar(500)
+  timezone    String          @default("UTC") @db.VarChar(50)
+  ownerId     String?
+  status      WorkspaceStatus @default(ACTIVE)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  owner              User?                 @relation("WorkspaceOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  memberships        Membership[]
+  roles              Role[]
+  clients            Client[]
+  websites           Website[]
+  invitations        Invitation[]
+  aiModelConfig      AIModelConfiguration?
+  aiPromptTemplates  AIPromptTemplate[]
+  mcpClients         MCPClient[]
+  auditLogs          AuditLog[]
+  googleAccounts     GoogleAccount[]
+  clarityConnections ClarityConnection[]
+  syncSchedules      SyncSchedule[]
+  seoAnalysisRuns    SEOAnalysisRun[]
+  seoFindings        SEOFinding[]
+  seoAnalysisSettings SEOAnalysisSetting[]
+  seoReports         SEOReport[]
+  reportSchedules    ReportSchedule[]
+  reportBranding     ReportBranding?
+
+  @@map("workspaces")
+  @@index([slug])
+  @@index([ownerId])
+  @@index([status])
+}
+
+model Membership {
+  id          String           @id @default(uuid())
+  workspaceId String
+  userId      String
+  roleId      String
+  status      MembershipStatus @default(ACTIVE)
+  joinedAt    DateTime?
+  invitedAt   DateTime         @default(now())
+  invitedBy   String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  role      Role      @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@unique([workspaceId, userId])
+  @@map("memberships")
+  @@index([workspaceId])
+  @@index([userId])
+  @@index([roleId])
+}
+
+model Role {
+  id          String    @id @default(uuid())
+  workspaceId String?
+  name        String    @db.VarChar(50)
+  slug        String    @db.VarChar(50)
+  description String?   @db.VarChar(255)
+  isSystem    Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workspace   Workspace?       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  permissions RolePermission[]
+  memberships Membership[]
+  invitations Invitation[]
+
+  @@unique([workspaceId, slug])
+  @@map("roles")
+  @@index([workspaceId])
+  @@index([slug])
+}
+
+model Permission {
+  id          String   @id @default(uuid())
+  key         String   @unique @db.VarChar(100)
+  module      String   @db.VarChar(50)
+  description String?  @db.VarChar(255)
+  createdAt   DateTime @default(now())
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+  @@index([module])
+}
+
+model RolePermission {
+  id           String   @id @default(uuid())
+  roleId       String
+  permissionId String
+  createdAt    DateTime @default(now())
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+  @@index([roleId])
+  @@index([permissionId])
+}
+
+model RefreshToken {
+  id         String    @id @default(uuid())
+  userId     String
+  tokenHash  String    @unique @db.VarChar(255)
+  sessionId  String    @default(uuid())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  lastUsedAt DateTime?
+  ipAddress  String?   @db.VarChar(45)
+  userAgent  String?   @db.VarChar(500)
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+  @@index([userId])
+  @@index([sessionId])
+  @@index([expiresAt])
+}
+
+model Invitation {
+  id          String           @id @default(uuid())
+  workspaceId String
+  email       String           @db.VarChar(255)
+  roleId      String
+  invitedById String
+  tokenHash   String           @unique @db.VarChar(255)
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  status      InvitationStatus @default(PENDING)
+  createdAt   DateTime         @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  role      Role      @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  invitedBy User      @relation("InvitedByUser", fields: [invitedById], references: [id], onDelete: Cascade)
+
+  @@map("invitations")
+  @@index([workspaceId])
+  @@index([email])
+  @@index([status])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  workspaceId String?
+  userId      String?
+  action      String   @db.VarChar(100)
+  entityType  String   @db.VarChar(100)
+  entityId    String?  @db.VarChar(255)
+  metadata    Json?
+  ipAddress   String?  @db.VarChar(45)
+  userAgent   String?  @db.VarChar(500)
+  createdAt   DateTime @default(now())
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  user      User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("audit_logs")
+  @@index([workspaceId])
+  @@index([userId])
+  @@index([action])
+  @@index([entityType])
+  @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// CLIENT MANAGEMENT
+// ─────────────────────────────────────────────────────────────────────
+
+model Client {
+  id           String       @id @default(uuid())
+  workspaceId  String
+  name         String       @db.VarChar(100)
+  slug         String       @db.VarChar(100)
+  companyName  String?      @db.VarChar(150)
+  contactName  String?      @db.VarChar(100)
+  contactEmail String?      @db.VarChar(255)
+  contactPhone String?      @db.VarChar(50)
+  website      String?      @db.VarChar(500)
+  industry     String?      @db.VarChar(100)
+  timezone     String       @default("UTC") @db.VarChar(50)
+  logoUrl      String?      @db.VarChar(500)
+  notes        String?      @db.Text
+  status       ClientStatus @default(ACTIVE)
+  createdById  String?
+  archivedAt   DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  workspace   Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy   User?          @relation("ClientCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  websites    Website[]
+  competitors Competitor[]
+  members     ClientMember[]
+  reports     SEOReport[]
+  reportSchedules ReportSchedule[]
+  seoAnalysisRuns SEOAnalysisRun[]
+  seoFindings     SEOFinding[]
+
+  @@unique([workspaceId, slug])
+  @@map("clients")
+  @@index([workspaceId])
+  @@index([status])
+}
+
+model ClientMember {
+  id           String   @id @default(uuid())
+  clientId     String
+  userId       String
+  assignedById String?
+  createdAt    DateTime @default(now())
+
+  client     Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  user       User   @relation("ClientMemberUser", fields: [userId], references: [id], onDelete: Cascade)
+  assignedBy User?  @relation("ClientMemberAssignedBy", fields: [assignedById], references: [id], onDelete: SetNull)
+
+  @@unique([clientId, userId])
+  @@map("client_members")
+  @@index([clientId])
+  @@index([userId])
+}
+
+model Website {
+  id          String        @id @default(uuid())
+  clientId    String
+  workspaceId String
+  name        String        @db.VarChar(100)
+  domain      String        @db.VarChar(255)
+  url         String?       @db.VarChar(2048)
+  description String?       @db.Text
+  timezone    String        @default("UTC") @db.VarChar(50)
+  status      WebsiteStatus @default(ACTIVE)
+  createdById String?
+  archivedAt  DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  client    Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy User?     @relation("WebsiteCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  integrations          IntegrationConnection[]
+  ga4DailyMetrics       GA4DailyMetric[]
+  ga4LandingMetrics     GA4LandingPageMetric[]
+  ga4SourceMetrics      GA4TrafficSourceMetric[]
+  ga4EventMetrics       GA4EventMetric[]
+  ga4DeviceMetrics      GA4DeviceMetric[]
+  ga4CountryMetrics     GA4CountryMetric[]
+  gscQueryMetrics       GSCQueryMetric[]
+  gscPageMetrics        GSCPageMetric[]
+  gscCountryMetrics     GSCCountryMetric[]
+  gscDeviceMetrics      GSCDeviceMetric[]
+  gscDailyMetrics       GSCDailyMetric[]
+  clarityDailyMetrics   ClarityDailyMetric[]
+  clarityPageMetrics    ClarityPageMetric[]
+  clarityInteractions   ClarityInteractionMetric[]
+  clarityDeviceMetrics    ClarityDeviceMetric[]
+  clarityCountryMetrics   ClarityCountryMetric[]
+  claritySnapshots        ClarityImportSnapshot[]
+  clarityDimensionMetrics ClarityDimensionMetric[]
+  seoAudits               SEOAudit[]
+  keywords              Keyword[]
+  competitors           Competitor[]
+  reports               SEOReport[]
+  reportSchedules       ReportSchedule[]
+  conversations         AIConversation[]
+  syncJobs              SyncJob[]
+  syncSchedules         SyncSchedule[]
+  syncCheckpoints       SyncCheckpoint[]
+  seoAnalysisRuns       SEOAnalysisRun[]
+  seoFindings           SEOFinding[]
+  seoAnalysisSetting    SEOAnalysisSetting?
+
+  @@unique([clientId, domain])
+  @@map("websites")
+  @@index([clientId])
+  @@index([workspaceId])
+  @@index([status])
+}
+
+model Competitor {
+  id        String   @id @default(uuid())
+  clientId  String
+  websiteId String?
+  domain    String   @db.VarChar(255)
+  name      String?  @db.VarChar(100)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  client   Client              @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  website  Website?            @relation(fields: [websiteId], references: [id], onDelete: SetNull)
+  keywords CompetitorKeyword[]
+
+  @@map("competitors")
+  @@index([clientId])
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// INTEGRATION MANAGEMENT
+// ─────────────────────────────────────────────────────────────────────
+
+model IntegrationConnection {
+  id                    String            @id @default(uuid())
+  websiteId             String
+  workspaceId           String
+  googleAccountId       String?
+  clarityConnectionId   String?
+  integrationType       IntegrationType
+  status                IntegrationStatus @default(NOT_CONNECTED)
+  selectedProperty      String?           @db.VarChar(500)
+  selectedPropertyName  String?           @db.VarChar(255)
+  credentialsEnc        String?           @db.Text
+  lastSyncAt            DateTime?
+  lastSyncStatus        SyncJobStatus?
+  lastError             String?           @db.Text
+  nextScheduledSync     DateTime?
+  syncIntervalMinutes   Int               @default(360)
+  isHistoricalComplete  Boolean           @default(false)
+  historicalStartDate   String?           @db.VarChar(10)
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  website           Website            @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  googleAccount     GoogleAccount?     @relation(fields: [googleAccountId], references: [id], onDelete: SetNull)
+  clarityConnection ClarityConnection? @relation(fields: [clarityConnectionId], references: [id], onDelete: SetNull)
+  oauthAccount      OAuthAccount?
+  syncJobs          SyncJob[]
+  syncHistory       SyncHistory[]
+  apiUsage          ApiUsage[]
+
+  @@unique([websiteId, integrationType])
+  @@map("integration_connections")
+  @@index([websiteId])
+  @@index([workspaceId])
+  @@index([googleAccountId])
+  @@index([clarityConnectionId])
+  @@index([integrationType])
+  @@index([status])
+}
+
+model GoogleAccount {
+  id               String                 @id @default(uuid())
+  workspaceId      String
+  googleId         String                 @db.VarChar(255)
+  email            String                 @db.VarChar(255)
+  displayName      String?                @db.VarChar(255)
+  avatarUrl        String?                @db.VarChar(500)
+  accessTokenEnc   String                 @db.Text
+  refreshTokenEnc  String                 @db.Text
+  tokenExpiresAt   DateTime?
+  scopes           String                 @db.Text
+  status           OAuthStatus            @default(CONNECTED)
+  lastRefreshedAt  DateTime?
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+
+  workspace        Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  integrations     IntegrationConnection[]
+
+  @@unique([workspaceId, email])
+  @@map("google_accounts")
+  @@index([workspaceId])
+  @@index([email])
+}
+
+model OAuthAccount {
+  id                String    @id @default(uuid())
+  connectionId      String    @unique
+  provider          String    @default("google") @db.VarChar(50)
+  providerAccountId String    @db.VarChar(255)
+  email             String    @db.VarChar(255)
+  displayName       String?   @db.VarChar(100)
+  accessTokenEnc    String?   @db.Text
+  refreshTokenEnc   String?   @db.Text
+  tokenExpiresAt    DateTime?
+  scopes            String?   @db.Text
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  connection IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@map("oauth_accounts")
+  @@index([connectionId])
+  @@index([provider, providerAccountId])
+}
+
+model ClarityConnection {
+  id               String            @id @default(uuid())
+  workspaceId      String
+  projectId        String            @db.VarChar(100)
+  projectName      String?           @db.VarChar(255)
+  apiTokenEnc      String            @db.Text
+  status           IntegrationStatus @default(CONNECTED)
+  createdById      String?
+  lastValidatedAt  DateTime?
+  lastSyncAt       DateTime?
+  lastError        String?           @db.Text
+  apiCallsToday    Int               @default(0)
+  apiCallsResetAt  DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  workspace        Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy        User?                   @relation("ClarityConnectionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  integrations     IntegrationConnection[]
+  snapshots        ClarityImportSnapshot[]
+
+  @@unique([workspaceId, projectId])
+  @@map("clarity_connections")
+  @@index([workspaceId])
+  @@index([projectId])
+}
+
+model ClarityImportSnapshot {
+  id                  String            @id @default(uuid())
+  workspaceId         String
+  clarityConnectionId String
+  websiteId           String
+  importTimestamp     DateTime          @default(now())
+  requestedNumOfDays  Int
+  windowStart         DateTime?
+  windowEnd           DateTime?
+  preset              String            @db.VarChar(50)
+  dimensions          String?           @db.VarChar(255)
+  rawResponseJson     String            @db.LongText
+  rowCount            Int               @default(0)
+  status              SyncJobStatus     @default(COMPLETED)
+  isTruncated         Boolean           @default(false)
+  errorMessage        String?           @db.Text
+  createdAt           DateTime          @default(now())
+
+  clarityConnection   ClarityConnection @relation(fields: [clarityConnectionId], references: [id], onDelete: Cascade)
+  website             Website           @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@map("clarity_import_snapshots")
+  @@index([websiteId])
+  @@index([clarityConnectionId])
+  @@index([importTimestamp])
+  @@index([preset])
+}
+
+model SyncJob {
+  id             String          @id @default(uuid())
+  workspaceId    String?         @map("workspace_id")
+  clientId       String?         @map("client_id")
+  connectionId   String
+  websiteId      String
+  provider       IntegrationType?
+  jobType        SyncJobType
+  status         SyncJobStatus   @default(PENDING)
+  bullmqJobId    String?         @db.VarChar(255)
+  dateRangeStart String?         @db.VarChar(10)
+  dateRangeEnd   String?         @db.VarChar(10)
+  recordsFetched Int             @default(0) @map("records_fetched")
+  recordsStored  Int             @default(0) @map("records_stored")
+  priority       Int             @default(0)
+  attempts       Int             @default(0)
+  maxAttempts    Int             @default(3)
+  scheduledAt    DateTime?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  error          String?         @db.Text
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  website    Website?              @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  connection IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  history    SyncHistory[]
+
+  @@map("sync_jobs")
+  @@index([connectionId])
+  @@index([websiteId])
+  @@index([status])
+  @@index([jobType])
+  @@index([scheduledAt])
+  @@index([workspaceId])
+}
+
+model SyncSchedule {
+  id              String          @id @default(uuid())
+  workspaceId     String          @map("workspace_id")
+  websiteId       String          @map("website_id")
+  connectionId    String?         @map("connection_id")
+  provider        IntegrationType
+  enabled         Boolean         @default(true)
+  cronExpression  String?         @map("cron_expression") @db.VarChar(50)
+  intervalMinutes Int             @default(1440) @map("interval_minutes")
+  timezone        String          @default("UTC") @db.VarChar(50)
+  lastRunAt       DateTime?       @map("last_run_at")
+  nextRunAt       DateTime?       @map("next_run_at")
+  lastStatus      SyncJobStatus?  @map("last_status")
+  createdAt       DateTime        @default(now()) @map("created_at")
+  updatedAt       DateTime        @updatedAt @map("updated_at")
+
+  workspace       Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  website         Website         @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, provider])
+  @@map("sync_schedules")
+  @@index([workspaceId])
+  @@index([websiteId])
+  @@index([enabled])
+}
+
+model SyncCheckpoint {
+  id                   String          @id @default(uuid())
+  websiteId            String          @map("website_id")
+  connectionId         String?         @map("connection_id")
+  provider             IntegrationType
+  lastSuccessfulDate   String?         @map("last_successful_date") @db.VarChar(10)
+  lastSuccessfulSyncAt DateTime?       @map("last_successful_sync_at")
+  syncMetadataJson     String?         @map("sync_metadata_json") @db.Text
+  createdAt            DateTime        @default(now()) @map("created_at")
+  updatedAt            DateTime        @updatedAt @map("updated_at")
+
+  website              Website         @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, provider])
+  @@map("sync_checkpoints")
+  @@index([websiteId])
+}
+
+model SyncHistory {
+  id              String          @id @default(uuid())
+  syncJobId       String?
+  connectionId    String
+  websiteId       String
+  integrationType IntegrationType
+  status          SyncJobStatus
+  startedAt       DateTime
+  completedAt     DateTime?
+  rowsFetched     Int             @default(0)
+  rowsInserted    Int             @default(0)
+  rowsUpdated     Int             @default(0)
+  rowsSkipped     Int             @default(0)
+  apiCallsUsed    Int             @default(0)
+  errorMessage    String?         @db.Text
+  dateRangeStart  String?         @db.VarChar(10)
+  dateRangeEnd    String?         @db.VarChar(10)
+  createdAt       DateTime        @default(now())
+
+  syncJob    SyncJob?              @relation(fields: [syncJobId], references: [id], onDelete: SetNull)
+  connection IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@map("sync_history")
+  @@index([connectionId])
+  @@index([websiteId])
+  @@index([integrationType])
+  @@index([startedAt])
+}
+
+model ApiUsage {
+  id              String          @id @default(uuid())
+  connectionId    String
+  integrationType IntegrationType
+  endpoint        String          @db.VarChar(255)
+  callsCount      Int             @default(1)
+  date            String          @db.VarChar(10)
+  createdAt       DateTime        @default(now())
+
+  connection IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, endpoint, date])
+  @@map("api_usage")
+  @@index([connectionId])
+  @@index([date])
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// GA4 ANALYTICS METRICS
+// ─────────────────────────────────────────────────────────────────────
+
+model GA4DailyMetric {
+  id                   String   @id @default(uuid())
+  websiteId            String
+  date                 String   @db.VarChar(10)
+  sessions             Int      @default(0)
+  organicSessions      Int      @default(0)
+  totalUsers           Int      @default(0)
+  newUsers             Int      @default(0)
+  activeUsers          Int      @default(0)
+  engagedSessions      Int      @default(0)
+  engagementRate       Float    @default(0)
+  avgEngagementTimeSec Float    @default(0)
+  bounceRate           Float    @default(0)
+  eventCount           Int      @default(0)
+  conversions          Int      @default(0)
+  screenPageViews      Int      @default(0)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, date])
+  @@map("ga4_daily_metrics")
+  @@index([websiteId])
+  @@index([date])
+}
+
+model GA4LandingPageMetric {
+  id                   String   @id @default(uuid())
+  websiteId            String
+  date                 String   @db.VarChar(10)
+  landingPage          String   @db.VarChar(1000)
+  sessions             Int      @default(0)
+  organicSessions      Int      @default(0)
+  users                Int      @default(0)
+  newUsers             Int      @default(0)
+  engagedSessions      Int      @default(0)
+  engagementRate       Float    @default(0)
+  avgEngagementTimeSec Float    @default(0)
+  conversions          Int      @default(0)
+  bounceRate           Float    @default(0)
+  screenPageViews      Int      @default(0)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, date, landingPage(length: 200)])
+  @@map("ga4_landing_page_metrics")
+  @@index([websiteId])
+  @@index([date])
+  @@index([websiteId, date])
+}
+
+model GA4TrafficSourceMetric {
+  id              String   @id @default(uuid())
+  websiteId       String
+  date            String   @db.VarChar(10)
+  source          String   @db.VarChar(255)
+  medium          String   @db.VarChar(255)
+  campaign        String?  @db.VarChar(255)
+  sessions        Int      @default(0)
+  organicSessions Int      @default(0)
+  users           Int      @default(0)
+  newUsers        Int      @default(0)
+  conversions     Int      @default(0)
+  engagedSessions Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, date, source(length: 100), medium(length: 100)])
+  @@map("ga4_traffic_source_metrics")
+  @@index([websiteId])
+  @@index([date])
+  @@index([websiteId, date])
+}
+
+model GA4EventMetric {
+  id         String   @id @default(uuid())
+  websiteId  String
+  date       String   @db.VarChar(10)
+  eventName  String   @db.VarChar(255)
+  eventCount Int      @default(0)
+  users      Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, date, eventName(length: 200)])
+  @@map("ga4_event_metrics")
+  @@index([websiteId])
+  @@index([date])
+}
+
+model GA4DeviceMetric {
+  id              String   @id @default(uuid())
+  websiteId       String
+  date            String   @db.VarChar(10)
+  deviceCategory  String   @db.VarChar(50)
+  sessions        Int      @default(0)
+  organicSessions Int      @default(0)
+  users           Int      @default(0)
+  conversions     Int      @default(0)
+  engagementRate  Float    @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, date, deviceCategory])
+  @@map("ga4_device_metrics")
+  @@index([websiteId])
+  @@index([date])
+}
+
+model GA4CountryMetric {
+  id              String   @id @default(uuid())
+  websiteId       String
+  date            String   @db.VarChar(10)
+  country         String   @db.VarChar(100)
+  sessions        Int      @default(0)
+  organicSessions Int      @default(0)
+  users           Int      @default(0)
+  conversions     Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, date, country])
+  @@map("ga4_country_metrics")
+  @@index([websiteId])
+  @@index([date])
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// GOOGLE SEARCH CONSOLE METRICS
+// ─────────────────────────────────────────────────────────────────────
+
+model GSCDailyMetric {
+  id          String   @id @default(uuid())
+  websiteId   String
+  date        String   @db.VarChar(10)
+  clicks      Int      @default(0)
+  impressions Int      @default(0)
+  ctr         Float    @default(0)
+  avgPosition Float    @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, date])
+  @@map("gsc_daily_metrics")
+  @@index([websiteId])
+  @@index([date])
+}
+
+model GSCQueryMetric {
+  id          String   @id @default(uuid())
+  websiteId   String
+  date        String   @db.VarChar(10)
+  query       String   @db.VarChar(2048)
+  clicks      Int      @default(0)
+  impressions Int      @default(0)
+  ctr         Float    @default(0)
+  avgPosition Float    @default(0)
+  country     String?  @db.VarChar(10)
+  device      String?  @db.VarChar(50)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, date, query(length: 500), country, device])
+  @@map("gsc_query_metrics")
+  @@index([websiteId])
+  @@index([date])
+  @@index([websiteId, date])
+  @@index([avgPosition])
+  @@index([impressions])
+}
+
+model GSCPageMetric {
+  id          String   @id @default(uuid())
+  websiteId   String
+  date        String   @db.VarChar(10)
+  page        String   @db.VarChar(2048)
+  clicks      Int      @default(0)
+  impressions Int      @default(0)
+  ctr         Float    @default(0)
+  avgPosition Float    @default(0)
+  country     String?  @db.VarChar(10)
+  device      String?  @db.VarChar(50)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, date, page(length: 500), country, device])
+  @@map("gsc_page_metrics")
+  @@index([websiteId])
+  @@index([date])
+  @@index([websiteId, date])
+}
+
+model GSCCountryMetric {
+  id          String   @id @default(uuid())
+  websiteId   String
+  date        String   @db.VarChar(10)
+  country     String   @db.VarChar(100)
+  clicks      Int      @default(0)
+  impressions Int      @default(0)
+  ctr         Float    @default(0)
+  avgPosition Float    @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, date, country])
+  @@map("gsc_country_metrics")
+  @@index([websiteId])
+  @@index([date])
+}
+
+model GSCDeviceMetric {
+  id          String   @id @default(uuid())
+  websiteId   String
+  date        String   @db.VarChar(10)
+  device      String   @db.VarChar(50)
+  clicks      Int      @default(0)
+  impressions Int      @default(0)
+  ctr         Float    @default(0)
+  avgPosition Float    @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, date, device])
+  @@map("gsc_device_metrics")
+  @@index([websiteId])
+  @@index([date])
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// MICROSOFT CLARITY METRICS
+// ─────────────────────────────────────────────────────────────────────
+
+model ClarityDailyMetric {
+  id                   String   @id @default(uuid())
+  websiteId            String
+  date                 String   @db.VarChar(10)
+  sessions             Int      @default(0)
+  distinctUsers        Int      @default(0)
+  botSessions          Int      @default(0)
+  pagesPerSession      Float    @default(0)
+  engagementRate       Float    @default(0)
+  avgScrollDepth       Float    @default(0)
+  avgTimeOnPageSec     Float    @default(0)
+  rageClickCount       Int      @default(0)
+  deadClickCount       Int      @default(0)
+  excessiveScrollCount Int      @default(0)
+  quickbackClickCount  Int      @default(0)
+  scriptErrorCount     Int      @default(0)
+  errorClickCount      Int      @default(0)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, date])
+  @@map("clarity_daily_metrics")
+  @@index([websiteId])
+  @@index([date])
+}
+
+model ClarityPageMetric {
+  id               String   @id @default(uuid())
+  websiteId        String
+  date             String   @db.VarChar(10)
+  page             String   @db.VarChar(2048)
+  sessions         Int      @default(0)
+  avgScrollDepth   Float    @default(0)
+  avgTimeOnPageSec Float    @default(0)
+  rageClicks       Int      @default(0)
+  deadClicks       Int      @default(0)
+  quickBacks       Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, date, page(length: 500)])
+  @@map("clarity_page_metrics")
+  @@index([websiteId])
+  @@index([date])
+}
+
+model ClarityInteractionMetric {
+  id              String   @id @default(uuid())
+  websiteId       String
+  date            String   @db.VarChar(10)
+  page            String?  @db.VarChar(2048)
+  interactionType String   @db.VarChar(50)
+  count           Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, date, interactionType, page(length: 400)])
+  @@map("clarity_interaction_metrics")
+  @@index([websiteId])
+  @@index([date])
+}
+
+model ClarityDeviceMetric {
+  id              String   @id @default(uuid())
+  websiteId       String
+  date            String   @db.VarChar(10)
+  device          String   @db.VarChar(50)
+  sessions        Int      @default(0)
+  pagesPerSession Float    @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, date, device])
+  @@map("clarity_device_metrics")
+  @@index([websiteId])
+  @@index([date])
+}
+
+model ClarityCountryMetric {
+  id              String   @id @default(uuid())
+  websiteId       String
+  date            String   @db.VarChar(10)
+  country         String   @db.VarChar(100)
+  sessions        Int      @default(0)
+  pagesPerSession Float    @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, date, country])
+  @@map("clarity_country_metrics")
+  @@index([websiteId])
+  @@index([date])
+}
+
+model ClarityDimensionMetric {
+  id             String   @id @default(uuid())
+  websiteId      String
+  snapshotId     String?
+  date           String   @db.VarChar(10)
+  metricName     String   @db.VarChar(100)
+  dimension1Name String?  @db.VarChar(50)
+  dimension1Val  String?  @db.VarChar(255)
+  dimension2Name String?  @db.VarChar(50)
+  dimension2Val  String?  @db.VarChar(255)
+  dimension3Name String?  @db.VarChar(50)
+  dimension3Val  String?  @db.VarChar(255)
+  value          Float    @default(0)
+  createdAt      DateTime @default(now())
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@map("clarity_dimension_metrics")
+  @@index([websiteId])
+  @@index([date])
+  @@index([metricName])
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// SEO ANALYSIS & OPPORTUNITY ENGINE (Phase 7)
+// ─────────────────────────────────────────────────────────────────────
+
+model SEOAnalysisRun {
+  id                    String            @id @default(uuid())
+  workspaceId           String
+  clientId              String
+  websiteId             String
+  status                String            @default("PENDING") @db.VarChar(50) // PENDING, RUNNING, COMPLETED, FAILED
+  analysisPeriodStart   String            @db.VarChar(10)
+  analysisPeriodEnd     String            @db.VarChar(10)
+  comparisonPeriodStart String?           @db.VarChar(10)
+  comparisonPeriodEnd   String?           @db.VarChar(10)
+  analysisType          String            @default("FULL") @db.VarChar(50)
+  rulesVersion          String            @default("1.0.0") @db.VarChar(20)
+  findingsCount         Int               @default(0)
+  summaryJson           String?           @db.Text
+  error                 String?           @db.Text
+  startedAt             DateTime?
+  completedAt           DateTime?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  workspace             Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  client                Client            @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  website               Website           @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  findings              SEOFinding[]
+
+  @@map("seo_analysis_runs")
+  @@index([websiteId])
+  @@index([workspaceId])
+  @@index([clientId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model SEOFinding {
+  id                    String            @id @default(uuid())
+  workspaceId           String
+  clientId              String
+  websiteId             String
+  analysisRunId         String?
+  fingerprint           String            @db.VarChar(255)
+  type                  String            @db.VarChar(100)
+  title                 String            @db.VarChar(255)
+  description           String            @db.Text
+  severity              String            @default("MEDIUM") @db.VarChar(50)
+  priority              String            @default("P3") @db.VarChar(20)
+  confidence            String            @default("HIGH") @db.VarChar(50)
+  affectedTarget        String?           @db.VarChar(2048)
+  targetType            String?           @db.VarChar(50)
+  currentValue          Float?
+  previousValue         Float?
+  changeValue           Float?
+  changePercentage      Float?
+  evidenceJson          String            @db.Text
+  suggestedAction       String            @db.Text
+  status                String            @default("NEW") @db.VarChar(50)
+  ruleVersion           String            @default("1.0.0") @db.VarChar(20)
+  detectedAt            DateTime          @default(now())
+  resolvedAt            DateTime?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  workspace             Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  client                Client            @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  website               Website           @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  analysisRun           SEOAnalysisRun?   @relation(fields: [analysisRunId], references: [id], onDelete: SetNull)
+  history               SEOFindingHistory[]
+
+  @@unique([websiteId, fingerprint])
+  @@map("seo_findings")
+  @@index([websiteId])
+  @@index([workspaceId])
+  @@index([type])
+  @@index([severity])
+  @@index([priority])
+  @@index([status])
+  @@index([detectedAt])
+}
+
+model SEOFindingHistory {
+  id             String      @id @default(uuid())
+  findingId      String
+  previousStatus String      @db.VarChar(50)
+  newStatus      String      @db.VarChar(50)
+  changedById    String?
+  note           String?     @db.Text
+  createdAt      DateTime    @default(now())
+
+  finding        SEOFinding  @relation(fields: [findingId], references: [id], onDelete: Cascade)
+  changedBy      User?       @relation(fields: [changedById], references: [id], onDelete: SetNull)
+
+  @@map("seo_finding_history")
+  @@index([findingId])
+  @@index([changedById])
+  @@index([createdAt])
+}
+
+model SEOAnalysisSetting {
+  id                      String      @id @default(uuid())
+  websiteId               String      @unique
+  workspaceId             String
+  minClicksThreshold      Int         @default(10)
+  minImpressionsThreshold Int         @default(100)
+  trafficDropWarningPct   Float       @default(20.0)
+  trafficDropCriticalPct  Float       @default(35.0)
+  enabledEnginesJson      String?     @db.Text
+  ctrBenchmarkJson        String?     @db.Text
+  createdAt               DateTime    @default(now())
+  updatedAt               DateTime    @updatedAt
+
+  website                 Website     @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  workspace               Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("seo_analysis_settings")
+  @@index([websiteId])
+  @@index([workspaceId])
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// LEGACY SEO AUDIT
+// ─────────────────────────────────────────────────────────────────────
+
+model SEOAudit {
+  id           String   @id @default(uuid())
+  websiteId    String
+  auditDate    DateTime
+  auditType    String   @db.VarChar(50)
+  overallScore Int?
+  summary      String?  @db.Text
+  metadata     Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  website Website    @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  issues  SEOIssue[]
+
+  @@map("seo_audits")
+  @@index([websiteId])
+  @@index([auditDate])
+}
+
+model SEOIssue {
+  id             String    @id @default(uuid())
+  auditId        String
+  issueType      String    @db.VarChar(100)
+  severity       String    @db.VarChar(20)
+  title          String    @db.VarChar(255)
+  description    String    @db.Text
+  affectedUrl    String?   @db.VarChar(2048)
+  recommendedFix String?   @db.Text
+  isResolved     Boolean   @default(false)
+  resolvedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  audit           SEOAudit            @relation(fields: [auditId], references: [id], onDelete: Cascade)
+  recommendations SEORecommendation[]
+
+  @@map("seo_issues")
+  @@index([auditId])
+  @@index([severity])
+  @@index([isResolved])
+}
+
+model SEORecommendation {
+  id          String   @id @default(uuid())
+  issueId     String
+  priority    String   @db.VarChar(20)
+  title       String   @db.VarChar(255)
+  description String   @db.Text
+  effort      String?  @db.VarChar(20)
+  impact      String?  @db.VarChar(20)
+  createdAt   DateTime @default(now())
+
+  issue SEOIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@map("seo_recommendations")
+  @@index([issueId])
+}
+
+model Keyword {
+  id        String   @id @default(uuid())
+  websiteId String
+  query     String   @db.VarChar(500)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  website       Website              @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  metrics       KeywordMetric[]
+  opportunities KeywordOpportunity[]
+
+  @@unique([websiteId, query(length: 300)])
+  @@map("keywords")
+  @@index([websiteId])
+}
+
+model KeywordMetric {
+  id          String   @id @default(uuid())
+  keywordId   String
+  date        String   @db.VarChar(10)
+  clicks      Int      @default(0)
+  impressions Int      @default(0)
+  ctr         Float    @default(0)
+  avgPosition Float    @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  keyword Keyword @relation(fields: [keywordId], references: [id], onDelete: Cascade)
+
+  @@unique([keywordId, date])
+  @@map("keyword_metrics")
+  @@index([keywordId])
+  @@index([date])
+}
+
+model KeywordOpportunity {
+  id              String   @id @default(uuid())
+  keywordId       String
+  websiteId       String
+  opportunityType String   @db.VarChar(100)
+  score           Float    @default(0)
+  avgPosition     Float    @default(0)
+  impressions     Int      @default(0)
+  clicks          Int      @default(0)
+  ctr             Float    @default(0)
+  notes           String?  @db.Text
+  calculatedAt    DateTime @default(now())
+  createdAt       DateTime @default(now())
+
+  keyword Keyword @relation(fields: [keywordId], references: [id], onDelete: Cascade)
+
+  @@map("keyword_opportunities")
+  @@index([keywordId])
+  @@index([websiteId])
+  @@index([opportunityType])
+  @@index([score])
+}
+
+model CompetitorKeyword {
+  id           String   @id @default(uuid())
+  competitorId String
+  query        String   @db.VarChar(500)
+  estimatedPos Float?
+  source       String?  @db.VarChar(100)
+  recordedAt   DateTime @default(now())
+
+  competitor Competitor @relation(fields: [competitorId], references: [id], onDelete: Cascade)
+
+  @@map("competitor_keywords")
+  @@index([competitorId])
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// AI
+// ─────────────────────────────────────────────────────────────────────
+
+model AIConversation {
+  id          String   @id @default(uuid())
+  userId      String
+  websiteId   String?
+  workspaceId String
+  title       String?  @db.VarChar(255)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user     User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  website  Website?     @relation(fields: [websiteId], references: [id], onDelete: SetNull)
+  messages AIMessage[]
+  analyses AIAnalysis[]
+
+  @@map("ai_conversations")
+  @@index([userId])
+  @@index([websiteId])
+  @@index([workspaceId])
+}
+
+model AIMessage {
+  id             String           @id @default(uuid())
+  conversationId String
+  role           ConversationRole
+  content        String           @db.LongText
+  toolsUsed      Json?
+  tokensUsed     Int?
+  durationMs     Int?
+  createdAt      DateTime         @default(now())
+
+  conversation AIConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@map("ai_messages")
+  @@index([conversationId])
+  @@index([createdAt])
+}
+
+model AIAnalysis {
+  id              String   @id @default(uuid())
+  conversationId  String?
+  websiteId       String?
+  analysisType    String   @db.VarChar(100)
+  inputContext    Json?
+  outputSummary   String?  @db.LongText
+  recommendations Json?
+  model           String   @db.VarChar(100)
+  tokensUsed      Int?
+  durationMs      Int?
+  createdAt       DateTime @default(now())
+
+  conversation AIConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@map("ai_analyses")
+  @@index([websiteId])
+  @@index([analysisType])
+  @@index([createdAt])
+}
+
+model AIPromptTemplate {
+  id          String   @id @default(uuid())
+  workspaceId String?
+  name        String   @db.VarChar(100)
+  description String?  @db.VarChar(500)
+  promptType  String   @db.VarChar(100)
+  template    String   @db.LongText
+  variables   Json?
+  isSystem    Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+
+  @@map("ai_prompt_templates")
+  @@index([workspaceId])
+  @@index([promptType])
+}
+
+model AIModelConfiguration {
+  id            String    @id @default(uuid())
+  workspaceId   String    @unique
+  ollamaUrl     String    @db.VarChar(255)
+  modelName     String    @db.VarChar(100)
+  temperature   Float     @default(0.3)
+  maxTokens     Int       @default(4096)
+  isHealthy     Boolean   @default(false)
+  lastCheckedAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("ai_model_configurations")
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// REPORTS
+// ─────────────────────────────────────────────────────────────────────
+
+model SEOReport {
+  id              String       @id @default(uuid())
+  websiteId       String
+  clientId        String
+  workspaceId     String
+  reportType      ReportType
+  format          ReportFormat @default(PDF)
+  status          ReportStatus @default(PENDING)
+  title           String       @db.VarChar(255)
+  periodStart     String       @db.VarChar(10)
+  periodEnd       String       @db.VarChar(10)
+  comparisonStart String?      @db.VarChar(10)
+  comparisonEnd   String?      @db.VarChar(10)
+  timezone        String       @default("UTC") @db.VarChar(50)
+  configuration   Json?
+  pdfPath         String?      @db.VarChar(500)
+  excelPath       String?      @db.VarChar(500)
+  fileSize        Int?
+  generatedBy     String?      @db.VarChar(36)
+  generatedAt     DateTime?
+  errorMessage    String?      @db.Text
+  aiSummary       String?      @db.LongText
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  website        Website               @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  client         Client                @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  workspace      Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sections       ReportSection[]
+  generationLogs ReportGenerationLog[]
+
+  @@map("seo_reports")
+  @@index([websiteId])
+  @@index([clientId])
+  @@index([workspaceId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ReportSection {
+  id          String   @id @default(uuid())
+  reportId    String
+  sectionType String   @db.VarChar(100)
+  title       String   @db.VarChar(255)
+  sortOrder   Int      @default(0)
+  content     Json?
+  createdAt   DateTime @default(now())
+
+  report SEOReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@map("report_sections")
+  @@index([reportId])
+}
+
+model ReportSchedule {
+  id            String       @id @default(uuid())
+  websiteId     String
+  clientId      String
+  workspaceId   String
+  reportName    String       @db.VarChar(255)
+  reportType    ReportType
+  format        ReportFormat @default(PDF)
+  configuration Json?
+  frequency     String       @default("MONTHLY") @db.VarChar(20) // WEEKLY, MONTHLY, QUARTERLY
+  cronExpr      String       @default("0 9 1 * *") @db.VarChar(100)
+  dayOfMonth    Int?
+  dayOfWeek     Int?
+  scheduledTime String?      @db.VarChar(10) // HH:mm
+  timezone      String       @default("UTC") @db.VarChar(50)
+  recipients    Json?        // Array of recipient email strings
+  isActive      Boolean      @default(true)
+  nextRunAt     DateTime?
+  lastRunAt     DateTime?
+  createdBy     String?      @db.VarChar(36)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  website   Website         @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  client    Client          @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  workspace Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  history   ReportHistory[]
+
+  @@map("report_schedules")
+  @@index([websiteId])
+  @@index([clientId])
+  @@index([workspaceId])
+  @@index([isActive])
+}
+
+model ReportHistory {
+  id           String       @id @default(uuid())
+  scheduleId   String
+  reportId     String?
+  status       ReportStatus
+  startedAt    DateTime
+  completedAt  DateTime?
+  errorMessage String?      @db.Text
+  createdAt    DateTime     @default(now())
+
+  schedule ReportSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  @@map("report_history")
+  @@index([scheduleId])
+}
+
+model ReportGenerationLog {
+  id           String       @id @default(uuid())
+  reportId     String
+  status       ReportStatus
+  startedAt    DateTime     @default(now())
+  completedAt  DateTime?
+  errorMessage String?      @db.Text
+  retryCount   Int          @default(0)
+  createdAt    DateTime     @default(now())
+
+  report SEOReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@map("report_generation_logs")
+  @@index([reportId])
+}
+
+model ReportBranding {
+  id                  String    @id @default(uuid())
+  workspaceId         String    @unique
+  agencyName          String    @db.VarChar(255)
+  logoStorageKey      String?   @db.VarChar(500)
+  brandPrimaryColor   String    @default("#4f46e5") @db.VarChar(20)
+  brandSecondaryColor String    @default("#0f172a") @db.VarChar(20)
+  website             String?   @db.VarChar(255)
+  contactEmail        String?   @db.VarChar(255)
+  footerText          String?   @db.VarChar(500)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("report_brandings")
+  @@index([workspaceId])
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// MCP
+// ─────────────────────────────────────────────────────────────────────
+
+model MCPClient {
+  id          String       @id @default(uuid())
+  workspaceId String
+  name        String       @db.VarChar(100)
+  description String?      @db.VarChar(255)
+  transport   MCPTransport @default(STDIO)
+  isActive    Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  workspace    Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  accessTokens MCPAccessToken[]
+  toolLogs     MCPToolExecutionLog[]
+
+  @@map("mcp_clients")
+  @@index([workspaceId])
+}
+
+model MCPAccessToken {
+  id          String    @id @default(uuid())
+  mcpClientId String
+  tokenHash   String    @unique @db.VarChar(255)
+  expiresAt   DateTime?
+  lastUsedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  revokedAt   DateTime?
+
+  mcpClient MCPClient @relation(fields: [mcpClientId], references: [id], onDelete: Cascade)
+
+  @@map("mcp_access_tokens")
+  @@index([mcpClientId])
+}
+
+model MCPToolExecutionLog {
+  id            String   @id @default(uuid())
+  mcpClientId   String
+  toolName      String   @db.VarChar(100)
+  inputParams   Json?
+  outputSummary String?  @db.Text
+  success       Boolean  @default(true)
+  errorMessage  String?  @db.Text
+  durationMs    Int?
+  userId        String?
+  websiteId     String?
+  executedAt    DateTime @default(now())
+
+  mcpClient MCPClient @relation(fields: [mcpClientId], references: [id], onDelete: Cascade)
+
+  @@map("mcp_tool_execution_logs")
+  @@index([mcpClientId])
+  @@index([toolName])
+  @@index([executedAt])
+}

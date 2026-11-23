@@ -1,0 +1,147 @@
+# =============================================================================
+# Missive Digital SEO Intelligence Platform - Git Ignore
+# =============================================================================
+
+# Dependencies
+node_modules/
+*/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-store/
+
+# Environment Variables & Secrets
+# Ignore every real env file in any folder (root, backend/, frontend/, ai-engine/, mcp-server/)
+.env
+.env.*
+*.env
+.env.local
+.env.development
+.env.development.local
+!.env.example
+!.env.staging.example
+!.env.production.example
+.env.dev
+.env.test
+.env.test.local
+.env.staging
+.env.staging.local
+.env.production
+.env.production.local
+.env.prod
+.env.product
+.env.live
+backend/.env
+frontend/.env
+ai-engine/.env
+mcp-server/.env
+# ...but keep the safe templates (no real values) in git
+!.env.example
+!.env.*.example
+!.env.sample
+!.env.template
+
+# Keys, certificates & credential files
+*.pem
+*.key
+*.cert
+*.crt
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
+credentials.json
+service-account*.json
+*-service-account.json
+google-credentials*.json
+gcp-key*.json
+client_secret*.json
+token.json
+secrets/
+.secrets/
+*.secret
+.npmrc
+.htpasswd
+
+# Claude Code / AI tool local settings
+.claude/settings.local.json
+CLAUDE.local.md
+
+# Production & Build Artifacts
+dist/
+build/
+*/dist/
+*/build/
+.vite/
+*.tsbuildinfo
+
+# Local Report Storage & Uploads
+storage/
+backend/storage/
+storage/reports/*
+!storage/reports/.gitkeep
+storage/uploads/*
+!storage/uploads/.gitkeep
+storage/branding/*
+!storage/branding/.gitkeep
+backups/
+*.dump
+*.sql
+*.sql.gz
+*.sqlite
+*.sqlite3
+*.db
+# Keep Prisma migration files - they must be committed
+!backend/prisma/migrations/**/*.sql
+
+# Temp folders
+tmp/
+.tmp/
+temp/
+*.tmp
+*.bak
+
+# Logs & PIDs
+logs/
+*.log
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Cache Directories
+.cache/
+.parcel-cache/
+.eslintcache
+.stylelintcache
+
+# Testing & Coverage
+coverage/
+.nyc_output/
+*.lcov
+
+# Database & Container Volumes
+mysql_data/
+redis_data/
+docker-data/
+
+# OS & Editor Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

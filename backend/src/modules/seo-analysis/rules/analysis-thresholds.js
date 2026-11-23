@@ -1,0 +1,76 @@
+// backend/src/modules/seo-analysis/rules/analysis-thresholds.js
+// Configurable thresholds and default boundaries for SEO Analysis Engine.
+
+export const DEFAULT_THRESHOLDS = {
+  // Traffic Volume Floors (avoid false alerts on small samples)
+  MIN_DAILY_CLICKS: 5,
+  MIN_PERIOD_CLICKS: 30,
+  MIN_PERIOD_IMPRESSIONS: 100,
+  MIN_PERIOD_SESSIONS: 50,
+  MIN_PERIOD_ORGANIC_SESSIONS: 25,
+
+  // Traffic Drop Percentages
+  TRAFFIC_DROP_MONITOR_PCT: 10.0,
+  TRAFFIC_DROP_WARNING_PCT: 20.0,
+  TRAFFIC_DROP_CRITICAL_PCT: 35.0,
+
+  // Keyword Opportunities
+  STRIKING_DISTANCE_MIN_POS: 4.0,
+  STRIKING_DISTANCE_MAX_POS: 20.0,
+  HIGH_IMP_LOW_CTR_RATIO: 0.6, // Actual CTR < 60% of benchmark
+
+  // Content Decay
+  DECAY_MIN_CONSECUTIVE_PERIODS: 2,
+  DECAY_MIN_DECLINE_PCT: 15.0,
+
+  // Clarity Behavioral Friction
+  CLARITY_DEAD_CLICK_RATE_PCT: 5.0,
+  CLARITY_RAGE_CLICK_RATE_PCT: 3.0,
+  CLARITY_LOW_SCROLL_DEPTH_PCT: 40.0,
+  CLARITY_MIN_SESSIONS: 20,
+
+  // Anomaly Detection
+  ANOMALY_ZSCORE_THRESHOLD: 2.0,
+  ANOMALY_MIN_VOLUME: 15,
+};
+
+export const RULE_TYPES = {
+  TRAFFIC_DROP: 'TRAFFIC_DROP',
+  KEYWORD_OPPORTUNITY: 'KEYWORD_OPPORTUNITY',
+  LOW_CTR: 'LOW_CTR',
+  RANKING_DROP: 'RANKING_DROP',
+  RANKING_GAIN: 'RANKING_GAIN',
+  CONTENT_DECAY: 'CONTENT_DECAY',
+  BEHAVIOUR_FRICTION: 'BEHAVIOUR_FRICTION',
+  ANOMALY: 'ANOMALY',
+};
+
+export const SEVERITIES = {
+  CRITICAL: 'CRITICAL',
+  HIGH: 'HIGH',
+  MEDIUM: 'MEDIUM',
+  LOW: 'LOW',
+  INFORMATIONAL: 'INFORMATIONAL',
+};
+
+export const PRIORITIES = {
+  P1: 'P1',
+  P2: 'P2',
+  P3: 'P3',
+  P4: 'P4',
+};
+
+export const CONFIDENCE_LEVELS = {
+  HIGH: 'HIGH',
+  MEDIUM: 'MEDIUM',
+  LOW: 'LOW',
+};
+
+export const FINDING_STATUSES = {
+  NEW: 'NEW',
+  OPEN: 'OPEN',
+  IN_PROGRESS: 'IN_PROGRESS',
+  RESOLVED: 'RESOLVED',
+  DISMISSED: 'DISMISSED',
+  REOPENED: 'REOPENED',
+};

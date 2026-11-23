@@ -1,0 +1,59 @@
+# missive-seo-intelligence/docker-compose.yml
+# Local development infrastructure services for Missive SEO Intelligence Platform.
+# Run `docker compose up -d` to launch MySQL 8.0 and Redis 7 without manual installation.
+
+version: '3.8'
+
+services:
+  # ─── MySQL 8.0 Relational Database ─────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    container_name: missive-seo-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password_dev}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-missive_seo}
+      MYSQL_USER: ${MYSQL_USER:-missive_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change_me_password}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --sql_mode=STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root_password_dev}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ─── Redis 7 In-Memory Queue Store (BullMQ) ────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: missive-seo-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy noeviction
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
