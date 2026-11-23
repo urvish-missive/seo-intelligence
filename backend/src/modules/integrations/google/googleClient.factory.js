@@ -6,6 +6,7 @@ import { env } from '../../../config/environment.js';
 import { decrypt, encrypt } from '../../../utils/encryption.js';
 import prisma from '../../../config/database.js';
 import logger from '../../../utils/logger.js';
+import { BadRequestError } from '../../../middleware/errorHandler.js';
 
 export class GoogleClientFactory {
   /**
@@ -13,8 +14,8 @@ export class GoogleClientFactory {
    */
   static createOAuth2Client() {
     if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
-      throw new Error(
-        'Google OAuth credentials missing. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env.'
+      throw new BadRequestError(
+        'Google OAuth credentials missing. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in backend/.env to connect Google Analytics & Search Console.'
       );
     }
 

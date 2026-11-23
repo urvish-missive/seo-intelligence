@@ -32,9 +32,10 @@ export default function IntegrationsPage() {
   const workspace = useSelector(selectActiveWorkspace);
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // Google Disconnect state
+  // Google Disconnect & Setup state
   const [googleDisconnectModalOpen, setGoogleDisconnectModalOpen] = useState(false);
   const [googleAccountToDisconnect, setGoogleAccountToDisconnect] = useState(null);
+  const [googleSetupModalOpen, setGoogleSetupModalOpen] = useState(false);
 
   // Clarity Connect & Disconnect state
   const [clarityModalOpen, setClarityModalOpen] = useState(false);
@@ -68,7 +69,12 @@ export default function IntegrationsPage() {
         window.location.href = res.data.authUrl;
       }
     } catch (err) {
-      alert(`Failed to initiate Google OAuth: ${err?.data?.message || err.message}`);
+      const msg = err?.data?.message || err.message || '';
+      if (msg.includes('Google OAuth credentials missing') || msg.includes('GOOGLE_CLIENT_ID')) {
+        setGoogleSetupModalOpen(true);
+      } else {
+        alert(`Failed to initiate Google OAuth: ${msg}`);
+      }
     }
   };
 
@@ -375,6 +381,64 @@ export default function IntegrationsPage() {
         onClose={() => setClarityModalOpen(false)}
         workspaceId={workspace?.id}
       />
+
+      {/* Google OAuth Setup Guide Modal */}
+      <Modal
+        isOpen={googleSetupModalOpen}
+        onClose={() => setGoogleSetupModalOpen(false)}
+        title="Google OAuth Setup Required"
+        maxWidth="max-w-xl"
+      >
+        <div className="space-y-4 text-xs text-surface-600">
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-900">
+            <p className="font-semibold text-xs">Google OAuth Credentials Missing</p>
+            <p className="mt-1 text-2xs text-amber-800">
+              To connect Google Analytics 4 (GA4) or Google Search Console (GSC), you must configure your OAuth 2.0 credentials in the backend <code className="bg-amber-100 px-1 py-0.5 rounded font-mono text-amber-900">.env</code> file.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <h4 className="font-semibold text-surface-900 text-xs">Quick Setup Instructions:</h4>
+            <ol className="list-decimal pl-4 space-y-2 text-xs text-surface-700">
+              <li>
+                Visit the <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer" className="text-brand-600 underline font-medium inline-flex items-center gap-0.5">Google Cloud Console <ExternalLink className="w-3 h-3 inline" /></a>.
+              </li>
+              <li>
+                Enable both <strong>Google Analytics Data API</strong> and <strong>Google Search Console API</strong> under <em>APIs & Services &gt; Library</em>.
+              </li>
+              <li>
+                Create an <strong>OAuth 2.0 Client ID</strong> (Application type: <em>Web application</em>).
+              </li>
+              <li>
+                Add the Authorized redirect URI:
+                <div className="mt-1 bg-surface-100 p-2 rounded border border-surface-200 font-mono text-2xs text-surface-800 select-all">
+                  http://localhost:3001/api/v1/integrations/google/callback
+                </div>
+              </li>
+              <li>
+                Copy your <strong>Client ID</strong> and <strong>Client Secret</strong> into <code className="font-mono bg-surface-100 px-1 py-0.5 rounded">backend/.env</code>:
+                <pre className="mt-1.5 bg-surface-900 text-surface-100 p-2.5 rounded font-mono text-2xs overflow-x-auto whitespace-pre">
+{`GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-client-secret
+GOOGLE_REDIRECT_URI=http://localhost:3001/api/v1/integrations/google/callback`}
+                </pre>
+              </li>
+              <li>
+                Restart the backend server (<code className="font-mono bg-surface-100 px-1 py-0.5 rounded">Ctrl + C</code> then <code className="font-mono bg-surface-100 px-1 py-0.5 rounded">npm run dev</code>).
+              </li>
+            </ol>
+          </div>
+
+          <div className="flex justify-end pt-2">
+            <button
+              onClick={() => setGoogleSetupModalOpen(false)}
+              className="btn-primary btn-sm"
+            >
+              Got it
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       {/* Disconnect Google Confirmation Modal */}
       <Modal

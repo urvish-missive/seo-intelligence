@@ -256,7 +256,7 @@ export class AIChatService {
       include: {
         messages: {
           orderBy: { createdAt: 'desc' },
-          take: 6,
+          take: 4, // keep prompt small: local CPU inference is slow
         },
       },
     });
