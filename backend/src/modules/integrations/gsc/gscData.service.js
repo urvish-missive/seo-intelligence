@@ -139,8 +139,8 @@ export class GSCDataService {
               websiteId,
               date,
               query: (query || '').substring(0, 500),
-              country: null,
-              device: null,
+              country: '',
+              device: '',
             },
           },
           update: {
@@ -157,6 +157,8 @@ export class GSCDataService {
             impressions,
             ctr,
             avgPosition,
+            country: '',
+            device: '',
           },
         });
         rowsInserted++;
@@ -190,8 +192,8 @@ export class GSCDataService {
               websiteId,
               date,
               page: (page || '').substring(0, 500),
-              country: null,
-              device: null,
+              country: '',
+              device: '',
             },
           },
           update: {
@@ -208,6 +210,8 @@ export class GSCDataService {
             impressions,
             ctr,
             avgPosition,
+            country: '',
+            device: '',
           },
         });
         rowsInserted++;
