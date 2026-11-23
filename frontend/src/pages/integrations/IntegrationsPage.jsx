@@ -146,10 +146,10 @@ export default function IntegrationsPage() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2.5">
           <button
             onClick={() => setClarityModalOpen(true)}
-            className="btn-secondary inline-flex items-center gap-2"
+            className="btn-secondary inline-flex items-center justify-center gap-2 w-full sm:w-auto"
           >
             <Zap className="w-4 h-4 text-brand-600" />
             <span>Connect Microsoft Clarity</span>
@@ -158,7 +158,7 @@ export default function IntegrationsPage() {
           <button
             onClick={handleConnectGoogle}
             disabled={isGeneratingUrl}
-            className="btn-primary inline-flex items-center gap-2"
+            className="btn-primary inline-flex items-center justify-center gap-2 w-full sm:w-auto"
           >
             {isGeneratingUrl ? (
               <RefreshCw className="w-4 h-4 animate-spin" />

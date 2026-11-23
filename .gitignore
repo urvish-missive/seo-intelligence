@@ -1,28 +1,33 @@
 # =============================================================================
-# Missive Digital SEO Intelligence Platform - Git Ignore
+# Missive Digital SEO Intelligence Platform - Comprehensive Git Ignore
 # =============================================================================
 
+# -----------------------------------------------------------------------------
 # Dependencies
+# -----------------------------------------------------------------------------
 node_modules/
-*/node_modules/
+**/node_modules/
+.pnpm-store/
+**/.pnpm-store/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
-.pnpm-store/
 
+# -----------------------------------------------------------------------------
 # Environment Variables & Secrets
-# Ignore every real env file in any folder (root, backend/, frontend/, ai-engine/, mcp-server/)
+# NEVER commit real credentials, tokens, or private keys to version control.
+# -----------------------------------------------------------------------------
 .env
 .env.*
 *.env
+**/.env
+**/.env.*
+**/*.env
 .env.local
 .env.development
 .env.development.local
-!.env.example
-!.env.staging.example
-!.env.production.example
 .env.dev
 .env.test
 .env.test.local
@@ -33,17 +38,15 @@ lerna-debug.log*
 .env.prod
 .env.product
 .env.live
-backend/.env
-frontend/.env
-ai-engine/.env
-mcp-server/.env
-# ...but keep the safe templates (no real values) in git
-!.env.example
-!.env.*.example
-!.env.sample
-!.env.template
 
-# Keys, certificates & credential files
+# Whitelist safe configuration templates & documentation
+!**/.env.example
+!**/.env.*.example
+!**/.env*.example
+!**/.env.sample
+!**/.env.template
+
+# Keys, certificates, SSH & cloud service account credentials
 *.pem
 *.key
 *.cert
@@ -67,69 +70,118 @@ secrets/
 .npmrc
 .htpasswd
 
-# Claude Code / AI tool local settings
-.claude/settings.local.json
-CLAUDE.local.md
+# -----------------------------------------------------------------------------
+# Generated Reports, PDF, Excel & File Storage
+# -----------------------------------------------------------------------------
+storage/
+**/storage/
+!**/storage/**/.gitkeep
+reports/
+**/reports/
+!**/reports/**/.gitkeep
+uploads/
+**/uploads/
+!**/uploads/**/.gitkeep
+backups/
+**/backups/
+!**/backups/**/.gitkeep
 
+# Exclude generated document formats (keep test fixtures)
+*.pdf
+*.xlsx
+*.xls
+*.csv
+!**/tests/fixtures/**/*.pdf
+!**/tests/fixtures/**/*.xlsx
+!**/tests/fixtures/**/*.xls
+!**/tests/fixtures/**/*.csv
+
+# -----------------------------------------------------------------------------
 # Production & Build Artifacts
+# -----------------------------------------------------------------------------
 dist/
+**/dist/
 build/
-*/dist/
-*/build/
+**/build/
+out/
+**/out/
 .vite/
+**/.vite/
 *.tsbuildinfo
 
-# Local Report Storage & Uploads
-storage/
-backend/storage/
-storage/reports/*
-!storage/reports/.gitkeep
-storage/uploads/*
-!storage/uploads/.gitkeep
-storage/branding/*
-!storage/branding/.gitkeep
-backups/
+# -----------------------------------------------------------------------------
+# Database, Backups & Container Volumes
+# -----------------------------------------------------------------------------
+mysql_data/
+**/mysql_data/
+redis_data/
+**/redis_data/
+docker-data/
+**/docker-data/
 *.dump
 *.sql
 *.sql.gz
 *.sqlite
 *.sqlite3
+*.sqlite-journal
 *.db
-# Keep Prisma migration files - they must be committed
-!backend/prisma/migrations/**/*.sql
+*.db-journal
 
-# Temp folders
-tmp/
-.tmp/
-temp/
-*.tmp
-*.bak
+# Keep Prisma database migrations tracked!
+!**/prisma/migrations/**/*.sql
 
-# Logs & PIDs
+# -----------------------------------------------------------------------------
+# Logs, PIDs & Caches
+# -----------------------------------------------------------------------------
 logs/
+**/logs/
 *.log
 pids/
 *.pid
 *.seed
 *.pid.lock
-
-# Cache Directories
 .cache/
+**/.cache/
 .parcel-cache/
 .eslintcache
 .stylelintcache
 
-# Testing & Coverage
+# -----------------------------------------------------------------------------
+# Testing & Code Coverage
+# -----------------------------------------------------------------------------
 coverage/
+**/coverage/
 .nyc_output/
 *.lcov
 
-# Database & Container Volumes
-mysql_data/
-redis_data/
-docker-data/
+# -----------------------------------------------------------------------------
+# AI Engine & Local Large Model Weights
+# (Local weights are stored by Ollama in ~/.ollama; don't commit models here)
+# -----------------------------------------------------------------------------
+models/
+**/models/
+*.gguf
+*.bin
+*.safetensors
+*.onnx
 
-# OS & Editor Files
+# -----------------------------------------------------------------------------
+# Temporary Files
+# -----------------------------------------------------------------------------
+tmp/
+**/tmp/
+.tmp/
+**/.tmp/
+temp/
+**/temp/
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# -----------------------------------------------------------------------------
+# Operating System & Editor Artifacts
+# -----------------------------------------------------------------------------
 .DS_Store
 .DS_Store?
 ._*
@@ -138,10 +190,20 @@ docker-data/
 ehthumbs.db
 Thumbs.db
 desktop.ini
+
+# IDE & Editor files
 .idea/
-.vscode/
+**/.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# AI Assistant local memory & session metadata
+.claude/settings.local.json
+CLAUDE.local.md

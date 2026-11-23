@@ -307,7 +307,7 @@ export default function ReportsPage() {
 
       {/* Tab Navigation */}
       <div className="border-b border-surface-200">
-        <nav className="flex space-x-8">
+        <nav className="flex space-x-4 sm:space-x-8 overflow-x-auto scrollbar-none whitespace-nowrap pb-px">
           {[
             { id: 'builder', label: 'Report Builder', icon: Sliders },
             { id: 'history', label: `Report History (${totalReportsCount})`, icon: Clock },
@@ -320,7 +320,7 @@ export default function ReportsPage() {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`py-3 px-1 border-b-2 font-medium text-sm flex items-center gap-2 transition-colors ${
+                className={`py-3 px-1 border-b-2 font-medium text-sm flex items-center gap-2 transition-colors flex-shrink-0 ${
                   isActive
                     ? 'border-brand-600 text-brand-600'
                     : 'border-transparent text-surface-500 hover:text-surface-700 hover:border-surface-300'

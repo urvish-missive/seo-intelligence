@@ -17,19 +17,19 @@ export default function Modal({ isOpen, onClose, title, children, maxWidth = 'ma
     <div className="fixed inset-0 z-50 overflow-y-auto">
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-surface-950/40 backdrop-blur-sm transition-opacity"
+        className="fixed inset-0 bg-surface-950/50 backdrop-blur-xs transition-opacity"
         onClick={onClose}
       />
 
       {/* Modal Dialog */}
-      <div className="flex min-h-full items-center justify-center p-4">
+      <div className="flex min-h-full items-center justify-center p-3 sm:p-4">
         <div
-          className={`relative w-full ${maxWidth} rounded-xl bg-white shadow-dropdown border border-surface-200 transition-all z-10`}
+          className={`relative w-full ${maxWidth} max-h-[90vh] flex flex-col rounded-xl bg-white shadow-dropdown border border-surface-200 transition-all z-10 my-auto`}
           onClick={(e) => e.stopPropagation()}
         >
           {/* Header */}
-          <div className="flex items-center justify-between border-b border-surface-100 px-6 py-4">
-            <h3 className="text-base font-semibold text-surface-900">{title}</h3>
+          <div className="flex items-center justify-between border-b border-surface-100 px-4 sm:px-6 py-3.5 sm:py-4 flex-shrink-0">
+            <h3 className="text-sm sm:text-base font-semibold text-surface-900">{title}</h3>
             <button
               onClick={onClose}
               className="text-surface-400 hover:text-surface-600 transition-colors p-1 rounded-md hover:bg-surface-100"
@@ -39,7 +39,7 @@ export default function Modal({ isOpen, onClose, title, children, maxWidth = 'ma
           </div>
 
           {/* Body */}
-          <div className="px-6 py-5">{children}</div>
+          <div className="px-4 sm:px-6 py-4 sm:py-5 overflow-y-auto flex-1">{children}</div>
         </div>
       </div>
     </div>

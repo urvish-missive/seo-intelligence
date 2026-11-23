@@ -183,10 +183,10 @@ export default function WebsiteDetailPage() {
       </div>
 
       {/* Main Tab Navigation */}
-      <div className="border-b border-surface-200 flex items-center gap-6">
+      <div className="border-b border-surface-200 flex items-center gap-4 sm:gap-6 overflow-x-auto scrollbar-none whitespace-nowrap pb-px">
         <button
           onClick={() => setActiveMainTab('integrations')}
-          className={`pb-3 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2 ${
+          className={`pb-3 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2 flex-shrink-0 ${
             activeMainTab === 'integrations'
               ? 'border-brand-600 text-brand-600'
               : 'border-transparent text-surface-500 hover:text-surface-800'
@@ -198,7 +198,7 @@ export default function WebsiteDetailPage() {
 
         <button
           onClick={() => setActiveMainTab('analytics')}
-          className={`pb-3 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2 ${
+          className={`pb-3 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2 flex-shrink-0 ${
             activeMainTab === 'analytics'
               ? 'border-brand-600 text-brand-600'
               : 'border-transparent text-surface-500 hover:text-surface-800'
@@ -210,7 +210,7 @@ export default function WebsiteDetailPage() {
 
         <button
           onClick={() => setActiveMainTab('clarity')}
-          className={`pb-3 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2 ${
+          className={`pb-3 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2 flex-shrink-0 ${
             activeMainTab === 'clarity'
               ? 'border-brand-600 text-brand-600'
               : 'border-transparent text-surface-500 hover:text-surface-800'
@@ -222,7 +222,7 @@ export default function WebsiteDetailPage() {
 
         <button
           onClick={() => setActiveMainTab('sync')}
-          className={`pb-3 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2 ${
+          className={`pb-3 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2 flex-shrink-0 ${
             activeMainTab === 'sync'
               ? 'border-brand-600 text-brand-600'
               : 'border-transparent text-surface-500 hover:text-surface-800'
@@ -235,7 +235,7 @@ export default function WebsiteDetailPage() {
 
       {/* TAB 1: INTEGRATIONS */}
       {activeMainTab === 'integrations' && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Left: Metadata */}
           <div className="card p-5 space-y-4">
             <h3 className="text-sm font-semibold text-surface-900">Website Configuration</h3>

@@ -51,11 +51,11 @@ export default function WebsiteAnalyticsDashboard({
       />
 
       {/* Sub Navigation Tabs */}
-      <div className="border-b border-surface-200 flex flex-wrap items-center gap-6">
+      <div className="border-b border-surface-200 flex items-center gap-4 sm:gap-6 overflow-x-auto scrollbar-none whitespace-nowrap pb-px">
         <button
           type="button"
           onClick={() => setActiveTab('overview')}
-          className={`pb-3 text-sm font-semibold border-b-2 flex items-center gap-2 transition-colors ${
+          className={`pb-3 text-sm font-semibold border-b-2 flex items-center gap-2 transition-colors flex-shrink-0 ${
             activeTab === 'overview'
               ? 'border-brand-600 text-brand-600'
               : 'border-transparent text-surface-500 hover:text-surface-800'
@@ -68,7 +68,7 @@ export default function WebsiteAnalyticsDashboard({
         <button
           type="button"
           onClick={() => setActiveTab('ga4')}
-          className={`pb-3 text-sm font-semibold border-b-2 flex items-center gap-2 transition-colors ${
+          className={`pb-3 text-sm font-semibold border-b-2 flex items-center gap-2 transition-colors flex-shrink-0 ${
             activeTab === 'ga4'
               ? 'border-brand-600 text-brand-600'
               : 'border-transparent text-surface-500 hover:text-surface-800'
@@ -81,7 +81,7 @@ export default function WebsiteAnalyticsDashboard({
         <button
           type="button"
           onClick={() => setActiveTab('gsc')}
-          className={`pb-3 text-sm font-semibold border-b-2 flex items-center gap-2 transition-colors ${
+          className={`pb-3 text-sm font-semibold border-b-2 flex items-center gap-2 transition-colors flex-shrink-0 ${
             activeTab === 'gsc'
               ? 'border-brand-600 text-brand-600'
               : 'border-transparent text-surface-500 hover:text-surface-800'
@@ -94,7 +94,7 @@ export default function WebsiteAnalyticsDashboard({
         <button
           type="button"
           onClick={() => setActiveTab('clarity')}
-          className={`pb-3 text-sm font-semibold border-b-2 flex items-center gap-2 transition-colors ${
+          className={`pb-3 text-sm font-semibold border-b-2 flex items-center gap-2 transition-colors flex-shrink-0 ${
             activeTab === 'clarity'
               ? 'border-brand-600 text-brand-600'
               : 'border-transparent text-surface-500 hover:text-surface-800'

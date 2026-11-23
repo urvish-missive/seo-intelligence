@@ -26,6 +26,7 @@ import {
   Loader2,
   FileSpreadsheet,
   AlertCircle,
+  MessageSquare,
 } from 'lucide-react';
 
 export default function AIAssistantPage() {
@@ -33,6 +34,7 @@ export default function AIAssistantPage() {
   const workspaceId = activeWorkspace?.id;
 
   const [activeConversationId, setActiveConversationId] = useState(null);
+  const [isConvSidebarOpen, setIsConvSidebarOpen] = useState(false);
   const [selectedWebsiteId, setSelectedWebsiteId] = useState('');
   const [inputText, setInputText] = useState('');
   const [streamingText, setStreamingText] = useState('');
@@ -270,7 +272,7 @@ export default function AIAssistantPage() {
   const isModelReady = health?.available && health?.modelPresent;
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] bg-white overflow-hidden">
+    <div className="flex h-[calc(100vh-4rem)] bg-white overflow-hidden relative">
       {/* 1. Left Sidebar: Conversations */}
       <ConversationSidebar
         conversations={conversations}
@@ -279,21 +281,34 @@ export default function AIAssistantPage() {
         onNewConversation={handleNewConversation}
         onDeleteConversation={handleDeleteConversation}
         isLoading={isConvLoading || isCreatingConv}
+        isOpen={isConvSidebarOpen}
+        onClose={() => setIsConvSidebarOpen(false)}
       />
 
       {/* 2. Main Chat Area */}
       <main className="flex-1 flex flex-col min-w-0 bg-white">
         {/* Top Header */}
-        <header className="h-14 border-b border-surface-200 px-4 sm:px-6 flex items-center justify-between gap-3 bg-white flex-shrink-0">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-8 h-8 rounded-lg bg-brand-50 border border-brand-200 flex items-center justify-center text-brand-600">
+        <header className="h-14 border-b border-surface-200 px-3 sm:px-6 flex items-center justify-between gap-2 sm:gap-3 bg-white flex-shrink-0">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            {/* Mobile Threads Toggle */}
+            <button
+              type="button"
+              onClick={() => setIsConvSidebarOpen(!isConvSidebarOpen)}
+              className="lg:hidden p-1.5 rounded-lg border border-surface-200 text-surface-600 hover:text-surface-900 hover:bg-surface-50 transition-colors flex items-center gap-1 text-xs flex-shrink-0"
+              title="Toggle conversation list"
+            >
+              <MessageSquare className="w-4 h-4 text-brand-600" />
+              <span className="hidden sm:inline">Threads</span>
+            </button>
+
+            <div className="w-8 h-8 rounded-lg bg-brand-50 border border-brand-200 flex items-center justify-center text-brand-600 flex-shrink-0">
               <Sparkles className="w-4 h-4" />
             </div>
-            <div>
-              <h2 className="text-sm font-bold text-surface-900 truncate">
+            <div className="min-w-0 truncate">
+              <h2 className="text-xs sm:text-sm font-bold text-surface-900 truncate">
                 {activeConversation?.title || 'SEO Intelligence Assistant'}
               </h2>
-              <div className="flex items-center gap-2 text-3xs text-surface-400">
+              <div className="hidden sm:flex items-center gap-2 text-3xs text-surface-400">
                 <span>Phase 8</span>
                 <span>•</span>
                 <span>Deterministic Evidence Layer</span>
@@ -302,14 +317,14 @@ export default function AIAssistantPage() {
           </div>
 
           {/* Right Header Controls */}
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-1.5 sm:gap-2.5 flex-shrink-0">
             {/* Website Selector */}
-            <div className="flex items-center gap-1.5 bg-surface-50 border border-surface-200 rounded-md px-2.5 py-1 text-xs">
-              <Globe className="w-3.5 h-3.5 text-surface-400" />
+            <div className="flex items-center gap-1 sm:gap-1.5 bg-surface-50 border border-surface-200 rounded-md px-2 sm:px-2.5 py-1 text-xs max-w-[130px] sm:max-w-xs">
+              <Globe className="w-3.5 h-3.5 text-surface-400 flex-shrink-0" />
               <select
                 value={selectedWebsiteId}
                 onChange={(e) => setSelectedWebsiteId(e.target.value)}
-                className="bg-transparent text-surface-800 text-xs font-medium focus:outline-none cursor-pointer"
+                className="bg-transparent text-surface-800 text-xs font-medium focus:outline-none cursor-pointer truncate w-full"
               >
                 <option value="">All Websites / General</option>
                 {websites.map((w) => (
@@ -322,7 +337,7 @@ export default function AIAssistantPage() {
 
             {/* Model Health Indicator Pill */}
             <div
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-3xs font-medium border ${
+              className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1 rounded-full text-3xs font-medium border flex-shrink-0 ${
                 isModelReady
                   ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                   : health?.available
@@ -345,7 +360,7 @@ export default function AIAssistantPage() {
                 type="button"
                 onClick={handleGenerateExecutiveReport}
                 disabled={isAnalyzing || !isModelReady}
-                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 bg-surface-100 hover:bg-surface-200 text-surface-700 rounded-md text-xs font-medium border border-surface-300 transition-colors disabled:opacity-50"
+                className="hidden md:inline-flex items-center gap-1.5 px-3 py-1 bg-surface-100 hover:bg-surface-200 text-surface-700 rounded-md text-xs font-medium border border-surface-300 transition-colors disabled:opacity-50"
                 title="Generate comprehensive executive SEO report"
               >
                 {isAnalyzing ? (
