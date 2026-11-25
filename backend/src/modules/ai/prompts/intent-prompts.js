@@ -6,9 +6,9 @@ import { AI_INTENTS } from '../services/ai-context.service.js';
 
 const DIRECTIVES = {
   [AI_INTENTS.TRAFFIC_ANALYSIS]:
-    'Focus on GA4 sessions, organic sessions, users, engagement and conversions, and which pages gained or lost traffic. Name the likely drivers.',
+    'For a country-specific visit question, use only the GA4 COUNTRY DATA section. Report sessions as visits and state the exact date range. Do not call sessions people; if the data only has daily user totals, explain that it cannot provide deduplicated unique people for the whole period. For other questions, focus on GA4 sessions, users, engagement and conversions.',
   [AI_INTENTS.KEYWORD_OPPORTUNITIES]:
-    'Focus on Search Console queries: striking-distance keywords (position 4-20), queries with high impressions but low CTR, and the pages that rank. Suggest title, meta description and content changes.',
+    'For a question about website clicks on a specific date, use only the Google Search Console clicks value for that exact date and name Google Search Console as the source. Explain that these are search-result clicks to the website, not unique people or clicks on page elements. Otherwise focus on Search Console queries, rankings and opportunities.',
   [AI_INTENTS.USER_BEHAVIOUR]:
     'Answer Microsoft Clarity questions from the Clarity section only. For a session-count question, give the exact requested-period session total first and state its date coverage. Do not substitute GA4 sessions or describe Clarity as Google Analytics.',
   [AI_INTENTS.SEO_FINDINGS]:

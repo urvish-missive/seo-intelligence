@@ -42,6 +42,49 @@ function requestedClarityRange(message = '') {
   return { startDate: daysAgo(days), endDate: daysAgo(1), days };
 }
 
+function requestedDateRange(message = '') {
+  const text = message.toLowerCase();
+  if (/\b(last|past|previous)\s+week\b/.test(text) || /\blast\s+7\s+days\b/.test(text)) {
+    return { startDate: daysAgo(7), endDate: daysAgo(1), days: 7 };
+  }
+  const monthNames = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+  const months = '(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|sept|october|oct|november|nov|december|dec)';
+  let day;
+  let month;
+  let year;
+  const dayFirst = text.match(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+${months}(?:\\s+(\\d{4}))?\\b`));
+  const monthFirst = text.match(new RegExp(`\\b${months}\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?\\b`));
+  const iso = text.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
+  if (iso) {
+    year = Number(iso[1]); month = Number(iso[2]) - 1; day = Number(iso[3]);
+  } else if (dayFirst || monthFirst) {
+    const match = dayFirst || monthFirst;
+    const monthText = match[dayFirst ? 2 : 1].slice(0, 3);
+    month = monthNames.indexOf(monthText);
+    day = Number(match[dayFirst ? 1 : 2]);
+    year = Number(match[dayFirst ? 3 : 3]) || new Date().getUTCFullYear();
+  } else {
+    return null;
+  }
+  const parsed = new Date(Date.UTC(year, month, day));
+  if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month || parsed.getUTCDate() !== day) return null;
+  if (!iso && !(dayFirst?.[3] || monthFirst?.[3]) && parsed > new Date()) parsed.setUTCFullYear(parsed.getUTCFullYear() - 1);
+  const date = parsed.toISOString().slice(0, 10);
+  return { startDate: date, endDate: date, days: 1 };
+}
+
+function requestedCountry(message = '') {
+  const text = message.toLowerCase();
+  const aliases = [
+    { match: /\bsouth\s+africa\b|\bfrom\s+sa\b|\bin\s+sa\b/, country: 'South Africa' },
+    { match: /\bsaudi\s+arabia\b/, country: 'Saudi Arabia' },
+    { match: /\bunited\s+states\b|\busa\b|\bus\b/, country: 'United States' },
+    { match: /\bunited\s+kingdom\b|\buk\b/, country: 'United Kingdom' },
+    { match: /\buae\b|\bunited\s+arab\s+emirates\b/, country: 'United Arab Emirates' },
+  ];
+  return aliases.find(({ match }) => match.test(text))?.country || null;
+}
+
 /** Read a metric that may be a number or a { current|value, percentChange } object. */
 function metricValue(m) {
   if (m === null || m === undefined) return null;
@@ -76,7 +119,7 @@ export class AIContextService {
     if (has('clarity', 'rage click', 'dead click', 'friction', 'usability', 'user behavior', 'user behaviour', ' ux', 'ux ', 'script error', 'scroll', 'quick back', 'quickback')) {
       return AI_INTENTS.USER_BEHAVIOUR;
     }
-    if (has('keyword', 'striking distance', 'query', 'queries', 'ranking', 'rank ', 'serp', 'search console', 'gsc', 'impressions', 'ctr', 'position')) {
+    if (has('keyword', 'striking distance', 'query', 'queries', 'ranking', 'rank ', 'serp', 'search console', 'gsc', 'impressions', 'ctr', 'position', 'click')) {
       return AI_INTENTS.KEYWORD_OPPORTUNITIES;
     }
     if (has('traffic', 'drop', 'fall', 'decline', 'loss', 'organic session', 'ga4', 'analytics', 'visitor', 'bounce', 'session', 'conversion')) {
@@ -138,11 +181,11 @@ export class AIContextService {
   /**
    * Cross-platform KPIs for the last 28 days with previous-period comparison.
    */
-  async getAnalyticsSummary(workspaceId, websiteId) {
+  async getAnalyticsSummary(workspaceId, websiteId, requestedPeriod = null) {
     if (!websiteId) return null;
 
-    const startDate = daysAgo(WINDOW_DAYS);
-    const endDate = daysAgo(1);
+    const startDate = requestedPeriod?.startDate || daysAgo(WINDOW_DAYS);
+    const endDate = requestedPeriod?.endDate || daysAgo(1);
     try {
       const [overview, ga4] = await Promise.all([
         analyticsDataService.getWebsiteOverview(workspaceId, websiteId, { startDate, endDate, compare: true }),
@@ -178,6 +221,31 @@ export class AIContextService {
       };
     } catch (err) {
       logger.warn('Failed to fetch analytics summary for AI context:', { error: err.message });
+      return null;
+    }
+  }
+
+  async getCountryTraffic(workspaceId, websiteId, period, country) {
+    if (!period || !country) return null;
+    try {
+      const rows = await prisma.gA4CountryMetric.findMany({
+        where: {
+          date: { gte: period.startDate, lte: period.endDate },
+          ...(websiteId ? { websiteId } : { website: { workspaceId } }),
+        },
+        select: { country: true, date: true, sessions: true, users: true },
+      });
+      const matching = rows.filter((row) => row.country.trim().toLowerCase() === country.toLowerCase());
+      if (!matching.length) return { country, sessions: null, dailyUsersSummed: null, daysWithData: 0 };
+      return {
+        country,
+        sessions: matching.reduce((sum, row) => sum + row.sessions, 0),
+        // These are daily distinct-user counts; a person active on multiple days can be counted more than once.
+        dailyUsersSummed: matching.reduce((sum, row) => sum + row.users, 0),
+        daysWithData: new Set(matching.map((row) => row.date)).size,
+      };
+    } catch (err) {
+      logger.warn('Failed to retrieve GA4 country traffic for AI context:', { error: err.message });
       return null;
     }
   }
@@ -320,8 +388,20 @@ export class AIContextService {
   /**
    * Render the evidence as compact text, most relevant sections first.
    */
-  formatContext({ intent, website, analytics, topSearch, strikingKeywords, topPages, clarityFriction, seoFindings, portfolio, clarityRequested, clarityRecent }) {
+  formatContext({ intent, website, analytics, topSearch, strikingKeywords, topPages, clarityFriction, seoFindings, portfolio, clarityRequested, clarityRecent, requestedPeriod, countryTraffic, requestedCountry: country }) {
     const sections = [];
+
+    if (country && requestedPeriod) {
+      sections.push(website
+        ? `SCOPE: ${website.domain}; requested country ${country}; requested period ${requestedPeriod.startDate} to ${requestedPeriod.endDate}.`
+        : `SCOPE: whole workspace portfolio; requested country ${country}; requested period ${requestedPeriod.startDate} to ${requestedPeriod.endDate}.`);
+      sections.push(countryTraffic?.sessions === null
+        ? `GA4 COUNTRY DATA: no stored ${country} country rows were found for this period. Do not substitute other totals or another country.`
+        : countryTraffic
+          ? `GA4 COUNTRY DATA: ${country} had ${fmtNum(countryTraffic.sessions)} sessions across ${countryTraffic.daysWithData} data days. Daily user counts summed to ${fmtNum(countryTraffic.dailyUsersSummed)}; this is not a deduplicated unique-people count.`
+          : 'GA4 COUNTRY DATA: no country data could be retrieved for this period. Do not infer the answer from overall site totals.');
+      return sections.join('\n\n');
+    }
 
     if (!website) {
       sections.push('SCOPE: Whole agency portfolio (no single website selected).');
@@ -360,6 +440,9 @@ export class AIContextService {
       `WEBSITE: ${website.domain} (client: ${website.clientName})\n` +
         `Integrations: GA4 ${yn(integ.ga4)}, Search Console ${yn(integ.gsc)}, Clarity ${yn(integ.clarity)}`
     );
+    if (requestedPeriod?.days === 1) {
+      sections.push(`REQUESTED DATE: ${requestedPeriod.startDate}. Use only metrics for this exact date. Google Search Console clicks count clicks from Google search results to the website; they are not people or on-site button clicks.`);
+    }
 
     // Core KPIs
     if (analytics) {
@@ -395,7 +478,7 @@ export class AIContextService {
       if (integ.gsc !== false) {
         kpiLines.push(
           'SEARCH CONSOLE:',
-          line('Clicks', k.clicks),
+          line('Google Search Console clicks from search results to this website', k.clicks),
           line('Impressions', k.impressions),
           line('CTR', k.ctr, 2, '%'),
           line('Average position (lower is better)', k.avgPosition, 1)
@@ -520,6 +603,9 @@ export class AIContextService {
   async buildContext(workspaceId, websiteId, userMessage) {
     const intent = this.classifyIntent(userMessage);
     const clarityRequested = requestedClarityRange(userMessage);
+    const requestedPeriod = requestedDateRange(userMessage) || clarityRequested;
+    const isSingleDayQuery = requestedPeriod?.days === 1;
+    const country = requestedCountry(userMessage);
 
     const [
       website,
@@ -531,17 +617,21 @@ export class AIContextService {
       topSearch,
       portfolio,
       clarityRecent,
+      countryTraffic,
     ] = await Promise.all([
       this.getWebsiteContext(workspaceId, websiteId),
-      this.getAnalyticsSummary(workspaceId, websiteId),
-      this.getStrikingDistanceKeywords(websiteId, 10, workspaceId),
-      this.getTopLandingPages(websiteId, 8, workspaceId),
-      this.getClarityFrictionPages(websiteId, 8, workspaceId),
-      this.getSEOFindings(workspaceId, websiteId, 12),
-      this.getTopSearchData(workspaceId, websiteId, 10),
-      websiteId ? Promise.resolve(null) : this.getWorkspacePortfolio(workspaceId, clarityRequested),
+      this.getAnalyticsSummary(workspaceId, websiteId, requestedPeriod),
+      isSingleDayQuery ? Promise.resolve([]) : this.getStrikingDistanceKeywords(websiteId, 10, workspaceId),
+      isSingleDayQuery ? Promise.resolve([]) : this.getTopLandingPages(websiteId, 8, workspaceId),
+      isSingleDayQuery ? Promise.resolve([]) : this.getClarityFrictionPages(websiteId, 8, workspaceId),
+      isSingleDayQuery ? Promise.resolve({ findings: [], stats: null }) : this.getSEOFindings(workspaceId, websiteId, 12),
+      isSingleDayQuery ? Promise.resolve({ queries: [], lowCtr: [] }) : this.getTopSearchData(workspaceId, websiteId, 10),
+      websiteId ? Promise.resolve(null) : this.getWorkspacePortfolio(workspaceId, requestedPeriod),
       websiteId && clarityRequested
         ? analyticsDataService.getClaritySummary(workspaceId, websiteId, clarityRequested).catch(() => null)
+        : Promise.resolve(null),
+      requestedPeriod && country
+        ? this.getCountryTraffic(workspaceId, websiteId, requestedPeriod, country)
         : Promise.resolve(null),
     ]);
 
@@ -557,6 +647,9 @@ export class AIContextService {
       portfolio,
       clarityRequested,
       clarityRecent,
+      requestedPeriod,
+      countryTraffic,
+      requestedCountry: country,
     });
 
     const evidenceMeta = {
