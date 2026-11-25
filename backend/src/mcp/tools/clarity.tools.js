@@ -84,7 +84,7 @@ export function registerClarityTools(server) {
 
         const where = {
           websiteId: args.websiteId,
-          ...(args.page ? { url: { contains: args.page } } : {}),
+          ...(args.page ? { page: { contains: args.page } } : {}),
         };
 
         const pages = await prisma.clarityPageMetric.findMany({
@@ -92,26 +92,22 @@ export function registerClarityTools(server) {
           orderBy: [{ deadClicks: 'desc' }, { rageClicks: 'desc' }],
           take: args.limit || 30,
           select: {
-            url: true,
-            visits: true,
+            page: true,
+            sessions: true,
             deadClicks: true,
             rageClicks: true,
-            excessiveScrolls: true,
             quickBacks: true,
-            scriptErrors: true,
             date: true,
           },
         });
 
         const formatted = pages.map(p => ({
-          url: p.url,
-          visits: p.visits,
+          page: p.page,
+          sessions: p.sessions,
           deadClicks: p.deadClicks,
           rageClicks: p.rageClicks,
-          excessiveScrolls: p.excessiveScrolls,
           quickBacks: p.quickBacks,
-          scriptErrors: p.scriptErrors,
-          date: p.date ? p.date.toISOString().split('T')[0] : null,
+          date: p.date ? String(p.date).slice(0, 10) : null,
         }));
 
         MCPAuditService.logExecution({

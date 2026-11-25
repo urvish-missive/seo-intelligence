@@ -98,7 +98,7 @@ export function registerSEOAnalysisTools(server) {
         const queries = await prisma.gSCQueryMetric.findMany({
           where: {
             websiteId: args.websiteId,
-            position: { gte: 4.0, lte: 20.0 },
+            avgPosition: { gte: 4.0, lte: 20.0 },
             impressions: { gte: minImp },
           },
           orderBy: { impressions: 'desc' },
@@ -108,7 +108,7 @@ export function registerSEOAnalysisTools(server) {
             clicks: true,
             impressions: true,
             ctr: true,
-            position: true,
+            avgPosition: true,
             date: true,
           },
         });
@@ -118,8 +118,8 @@ export function registerSEOAnalysisTools(server) {
           impressions: q.impressions,
           clicks: q.clicks,
           ctr: Number(q.ctr),
-          position: Number(q.position),
-          opportunityCategory: q.position <= 10 ? 'PAGE_1_STRIKING_DISTANCE' : 'PAGE_2_STRIKING_DISTANCE',
+          position: Number(q.avgPosition),
+          opportunityCategory: q.avgPosition <= 10 ? 'PAGE_1_STRIKING_DISTANCE' : 'PAGE_2_STRIKING_DISTANCE',
           priority: q.impressions > 500 ? 'HIGH' : 'MEDIUM',
           recommendation: `Optimise page title, meta description, and primary content headers for "${q.query}".`,
         }));

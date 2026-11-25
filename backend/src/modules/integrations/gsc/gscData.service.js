@@ -15,6 +15,28 @@ function getDaysAgoDate(days) {
   return d.toISOString().split('T')[0];
 }
 
+// Search Analytics limits each response page. Continue while a full page is
+// returned so large properties do not silently lose most query/page rows.
+async function fetchSearchAnalyticsRows(client, siteUrl, requestBody, onRequest = () => {}) {
+  const pageSize = 25000;
+  const rows = [];
+  let startRow = 0;
+
+  while (true) {
+    onRequest();
+    const response = await client.searchanalytics.query({
+      siteUrl,
+      requestBody: { ...requestBody, rowLimit: pageSize, startRow },
+    });
+    const page = response.data.rows || [];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+    startRow += page.length;
+  }
+
+  return rows;
+}
+
 export class GSCDataService {
   /**
    * Import Google Search Console data for a website across a date range.
@@ -65,18 +87,11 @@ export class GSCDataService {
       const siteUrl = connection.selectedProperty;
 
       // ─── 1. Daily Aggregates (Clicks, Impressions, CTR, Position) ─────────
-      apiCallsUsed++;
-      const dailyRes = await gscClient.searchanalytics.query({
-        siteUrl,
-        requestBody: {
+      const dailyRows = await fetchSearchAnalyticsRows(gscClient, siteUrl, {
           startDate: start,
           endDate: end,
           dimensions: ['date'],
-          rowLimit: 1000,
-        },
-      });
-
-      const dailyRows = dailyRes.data.rows || [];
+      }, () => { apiCallsUsed++; });
       rowsFetched += dailyRows.length;
 
       for (const row of dailyRows) {
@@ -112,18 +127,11 @@ export class GSCDataService {
       }
 
       // ─── 2. Top Queries (Keywords) ────────────────────────────────────────
-      apiCallsUsed++;
-      const queryRes = await gscClient.searchanalytics.query({
-        siteUrl,
-        requestBody: {
+      const queryRows = await fetchSearchAnalyticsRows(gscClient, siteUrl, {
           startDate: start,
           endDate: end,
           dimensions: ['date', 'query'],
-          rowLimit: 2500,
-        },
-      });
-
-      const queryRows = queryRes.data.rows || [];
+      }, () => { apiCallsUsed++; });
       rowsFetched += queryRows.length;
 
       for (const row of queryRows) {
@@ -165,18 +173,11 @@ export class GSCDataService {
       }
 
       // ─── 3. Top Pages ─────────────────────────────────────────────────────
-      apiCallsUsed++;
-      const pageRes = await gscClient.searchanalytics.query({
-        siteUrl,
-        requestBody: {
+      const pageRows = await fetchSearchAnalyticsRows(gscClient, siteUrl, {
           startDate: start,
           endDate: end,
           dimensions: ['date', 'page'],
-          rowLimit: 2500,
-        },
-      });
-
-      const pageRows = pageRes.data.rows || [];
+      }, () => { apiCallsUsed++; });
       rowsFetched += pageRows.length;
 
       for (const row of pageRows) {
@@ -218,18 +219,11 @@ export class GSCDataService {
       }
 
       // ─── 4. Device Categories ─────────────────────────────────────────────
-      apiCallsUsed++;
-      const deviceRes = await gscClient.searchanalytics.query({
-        siteUrl,
-        requestBody: {
+      const deviceRows = await fetchSearchAnalyticsRows(gscClient, siteUrl, {
           startDate: start,
           endDate: end,
           dimensions: ['date', 'device'],
-          rowLimit: 500,
-        },
-      });
-
-      const deviceRows = deviceRes.data.rows || [];
+      }, () => { apiCallsUsed++; });
       rowsFetched += deviceRows.length;
 
       for (const row of deviceRows) {
@@ -267,18 +261,11 @@ export class GSCDataService {
       }
 
       // ─── 5. Countries ─────────────────────────────────────────────────────
-      apiCallsUsed++;
-      const countryRes = await gscClient.searchanalytics.query({
-        siteUrl,
-        requestBody: {
+      const countryRows = await fetchSearchAnalyticsRows(gscClient, siteUrl, {
           startDate: start,
           endDate: end,
           dimensions: ['date', 'country'],
-          rowLimit: 500,
-        },
-      });
-
-      const countryRows = countryRes.data.rows || [];
+      }, () => { apiCallsUsed++; });
       rowsFetched += countryRows.length;
 
       for (const row of countryRows) {

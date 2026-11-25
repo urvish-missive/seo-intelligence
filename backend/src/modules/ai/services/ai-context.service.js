@@ -115,20 +115,19 @@ export class AIContextService {
 
       if (!website) return null;
 
-      // Check Clarity connection
-      const clarityConn = await prisma.clarityConnection.findFirst({
-        where: { workspaceId },
-        select: { projectId: true, status: true, lastSyncAt: true },
-      }).catch(() => null);
+      const isConnected = (value) => String(value || '').toUpperCase() === 'CONNECTED';
+      const clarityIntegration = website.integrations?.find(
+        (integration) => integration.integrationType?.toUpperCase() === 'CLARITY'
+      );
 
       return {
         id: website.id,
         domain: website.domain,
         clientName: website.client?.name || 'Unknown Client',
         integrations: {
-          ga4: website.integrations?.find(i => i.integrationType === 'ga4')?.status === 'connected',
-          gsc: website.integrations?.find(i => i.integrationType === 'gsc')?.status === 'connected',
-          clarity: clarityConn?.status === 'active' || clarityConn?.status === 'CONNECTED',
+          ga4: isConnected(website.integrations?.find(i => i.integrationType?.toUpperCase() === 'GA4')?.status),
+          gsc: isConnected(website.integrations?.find(i => i.integrationType?.toUpperCase() === 'GSC')?.status),
+          clarity: isConnected(clarityIntegration?.status),
         },
       };
     } catch (err) {
@@ -167,7 +166,7 @@ export class AIContextService {
       const keywords = await prisma.gSCQueryMetric.findMany({
         where: {
           websiteId,
-          position: { gte: 4.0, lte: 20.0 },
+          avgPosition: { gte: 4.0, lte: 20.0 },
           impressions: { gte: 50 },
         },
         orderBy: { impressions: 'desc' },
@@ -177,7 +176,7 @@ export class AIContextService {
           clicks: true,
           impressions: true,
           ctr: true,
-          position: true,
+          avgPosition: true,
           date: true,
         },
       }).catch(() => []);
@@ -204,7 +203,7 @@ export class AIContextService {
           clicks: true,
           impressions: true,
           ctr: true,
-          position: true,
+          avgPosition: true,
         },
       }).catch(() => []);
 
@@ -226,13 +225,11 @@ export class AIContextService {
         orderBy: [{ deadClicks: 'desc' }, { rageClicks: 'desc' }],
         take: limit,
         select: {
-          url: true,
-          visits: true,
+          page: true,
+          sessions: true,
           deadClicks: true,
           rageClicks: true,
-          excessiveScrolls: true,
           quickBacks: true,
-          scriptErrors: true,
         },
       }).catch(() => []);
 

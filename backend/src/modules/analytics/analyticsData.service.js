@@ -31,6 +31,9 @@ export class AnalyticsDataService {
             selectedProperty: true,
             selectedPropertyName: true,
             lastSyncAt: true,
+            clarityConnection: {
+              select: { apiCallsToday: true, apiCallsResetAt: true },
+            },
           },
         },
       },
@@ -795,7 +798,9 @@ export class AnalyticsDataService {
     const quickbackRate = totals.sessions > 0 ? parseFloat(((totals.quickbackClickCount / totals.sessions) * 100).toFixed(1)) : 0;
     const scriptErrorRate = totals.sessions > 0 ? parseFloat(((totals.scriptErrorCount / totals.sessions) * 100).toFixed(1)) : 0;
 
-    const clarityConn = website.integrations.find((i) => i.integrationType === 'CLARITY');
+    const clarityConn = website.integrations.find((i) => i.integrationType === 'CLARITY')?.clarityConnection;
+    const quotaIsCurrent = clarityConn?.apiCallsResetAt &&
+      new Date(clarityConn.apiCallsResetAt) >= new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`);
 
     return {
       reportingWindow: latestSnapshot
@@ -809,8 +814,8 @@ export class AnalyticsDataService {
         : null,
       quota: clarityConn
         ? {
-            callsToday: clarityConn.apiCallsToday || 0,
-            callsRemaining: Math.max(0, 10 - (clarityConn.apiCallsToday || 0)),
+            callsToday: quotaIsCurrent ? clarityConn.apiCallsToday : 0,
+            callsRemaining: Math.max(0, 10 - (quotaIsCurrent ? clarityConn.apiCallsToday : 0)),
             limit: 10,
           }
         : null,

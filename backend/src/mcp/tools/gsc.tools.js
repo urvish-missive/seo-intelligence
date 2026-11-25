@@ -54,9 +54,9 @@ export function registerGSCTools(server) {
         return mcpResponseService.formatSuccess({
           websiteId: args.websiteId,
           provider: 'GSC',
-          period: summary.period,
+          period: summary.dateRange,
           data: summary,
-          dataFreshness: summary.dataFreshness,
+          dataFreshness: summary.trends.at(-1)?.date || null,
         });
       } catch (err) {
         MCPAuditService.logExecution({

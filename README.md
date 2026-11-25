@@ -101,7 +101,7 @@ docker compose up -d
 Start Ollama and pull the recommended model:
 ```bash
 ollama serve
-ollama pull qwen2.5:7b-instruct
+ollama pull qwen2.5:7b
 ```
 
 ### 3. Backend Setup
@@ -127,6 +127,16 @@ npm install
 npm run dev
 ```
 Open your browser at `http://localhost:5173`.
+
+### Integration and AI checklist
+
+- Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `backend/.env`. In Google Cloud, enable the Google Search Console API and Google Analytics Data API, and register the exact `GOOGLE_REDIRECT_URI` as an authorized redirect URI.
+- Connect the Google account in the app, then associate the correct Search Console property with each website. OAuth connection alone does not select a property or import its metrics.
+- Create a Microsoft Clarity Data Export API token, connect the project, map it to the website, then run a Clarity sync. Clarity's export API is limited to rolling windows of 1–3 days and has a per-project daily request quota.
+- Start `npm run workers` in a separate backend terminal for queued and scheduled syncs. If Redis is not running, manual sync falls back to a background task in the API process; keep that process running until the job completes.
+- For the local AI assistant, keep Ollama running at `OLLAMA_BASE_URL` and install the exact configured `OLLAMA_MODEL` (default `qwen2.5:7b`). Check `GET /api/v1/workspaces/:workspaceId/ai/health` or the AI status in the app if responses are unavailable.
+- For a local MCP smoke check, open another terminal in `backend` and run `npm run mcp:stdio`. The backend also mounts Streamable HTTP MCP at `/api/v1/mcp` for clients using a workspace MCP token.
+- For an MCP desktop client, run `backend/src/mcp/transports/stdio.transport.js` from the `backend` directory so it loads `backend/.env`. Avoid copying database passwords or encryption keys into shared MCP config files.
 
 ---
 

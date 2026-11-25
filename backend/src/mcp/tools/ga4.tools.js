@@ -54,9 +54,9 @@ export function registerGA4Tools(server) {
         return mcpResponseService.formatSuccess({
           websiteId: args.websiteId,
           provider: 'GA4',
-          period: summary.period,
+          period: summary.dateRange,
           data: summary,
-          dataFreshness: summary.dataFreshness,
+          dataFreshness: summary.trends.at(-1)?.date || null,
         });
       } catch (err) {
         MCPAuditService.logExecution({

@@ -63,13 +63,8 @@ describe('AI Context Retrieval & Grounding Service Tests', () => {
         integrations: [
           { integrationType: 'ga4', status: 'connected', lastSyncAt: new Date() },
           { integrationType: 'gsc', status: 'connected', lastSyncAt: new Date() },
+          { integrationType: 'clarity', status: 'connected', lastSyncAt: new Date() },
         ],
-      });
-
-      jest.spyOn(prisma.clarityConnection, 'findFirst').mockResolvedValue({
-        projectId: 'clarity-123',
-        status: 'CONNECTED',
-        lastSyncAt: new Date(),
       });
 
       const ctx = await contextService.getWebsiteContext('ws-1', 'web-1');
