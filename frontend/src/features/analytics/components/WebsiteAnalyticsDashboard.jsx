@@ -1,111 +1,65 @@
 // frontend/src/features/analytics/components/WebsiteAnalyticsDashboard.jsx
 import React, { useState } from 'react';
-import {
-  Globe,
-  Database,
-  Search,
-  MousePointer,
-  RotateCcw,
-  Sparkles,
-} from 'lucide-react';
-import DateRangeSelector from './DateRangeSelector.jsx';
+import { Globe, Database, Search, MousePointer, FileText } from 'lucide-react';
+import DateRangeSelector, { getInitialDateRange } from './DateRangeSelector.jsx';
+import ReportSummaryView from './ReportSummaryView.jsx';
 import CrossPlatformOverviewView from './CrossPlatformOverviewView.jsx';
 import GA4DashboardView from './GA4DashboardView.jsx';
 import GSCDashboardView from './GSCDashboardView.jsx';
 import ClarityDashboardView from './ClarityDashboardView.jsx';
 import { useGetWebsiteAnalyticsOverviewQuery } from '../analyticsApi.js';
 
-export default function WebsiteAnalyticsDashboard({
-  workspaceId,
-  websiteId,
-  website,
-}) {
-  const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'ga4' | 'gsc' | 'clarity'
+const TABS = [
+  { id: 'report', label: 'Report Summary', Icon: FileText },
+  { id: 'overview', label: 'Cross-Platform Overview', Icon: Database },
+  { id: 'ga4', label: 'Google Analytics 4', Icon: Globe },
+  { id: 'gsc', label: 'Google Search Console', Icon: Search },
+  { id: 'clarity', label: 'Microsoft Clarity', Icon: MousePointer },
+];
 
-  const [dateRange, setDateRange] = useState({
-    preset: 'last_28_days',
-    startDate: '',
-    endDate: '',
-    compare: true,
-  });
+export default function WebsiteAnalyticsDashboard({ workspaceId, websiteId }) {
+  const [activeTab, setActiveTab] = useState('report');
 
-  const { data: overviewData, isLoading: isLoadingOverview, refetch } =
-    useGetWebsiteAnalyticsOverviewQuery(
-      {
-        workspaceId,
-        websiteId,
-        startDate: dateRange.startDate,
-        endDate: dateRange.endDate,
-        compare: dateRange.compare,
-      },
-      { skip: !workspaceId || !websiteId || !dateRange.startDate }
-    );
+  // Every tab shares one period; the last choice is remembered across visits
+  const [dateRange, setDateRange] = useState(() => getInitialDateRange());
+
+  const { data: overviewData, isLoading: isLoadingOverview } = useGetWebsiteAnalyticsOverviewQuery(
+    {
+      workspaceId,
+      websiteId,
+      startDate: dateRange.startDate,
+      endDate: dateRange.endDate,
+      compare: dateRange.compare,
+    },
+    { skip: !workspaceId || !websiteId || !dateRange.startDate || activeTab !== 'overview' }
+  );
 
   return (
     <div className="space-y-6">
-      {/* Top Global Date Filter (Preserved across all 3 Google tabs) */}
-      <DateRangeSelector
-        value={dateRange}
-        onChange={setDateRange}
-        showCompare={activeTab !== 'clarity'}
-      />
+      <DateRangeSelector value={dateRange} onChange={setDateRange} showCompare={activeTab !== 'clarity'} />
 
-      {/* Sub Navigation Tabs */}
       <div className="border-b border-surface-200 flex items-center gap-4 sm:gap-6 overflow-x-auto scrollbar-none whitespace-nowrap pb-px">
-        <button
-          type="button"
-          onClick={() => setActiveTab('overview')}
-          className={`pb-3 text-sm font-semibold border-b-2 flex items-center gap-2 transition-colors flex-shrink-0 ${
-            activeTab === 'overview'
-              ? 'border-brand-600 text-brand-600'
-              : 'border-transparent text-surface-500 hover:text-surface-800'
-          }`}
-        >
-          <Database className="w-4 h-4" />
-          <span>Cross-Platform Overview</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('ga4')}
-          className={`pb-3 text-sm font-semibold border-b-2 flex items-center gap-2 transition-colors flex-shrink-0 ${
-            activeTab === 'ga4'
-              ? 'border-brand-600 text-brand-600'
-              : 'border-transparent text-surface-500 hover:text-surface-800'
-          }`}
-        >
-          <Globe className="w-4 h-4" />
-          <span>Google Analytics 4</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('gsc')}
-          className={`pb-3 text-sm font-semibold border-b-2 flex items-center gap-2 transition-colors flex-shrink-0 ${
-            activeTab === 'gsc'
-              ? 'border-brand-600 text-brand-600'
-              : 'border-transparent text-surface-500 hover:text-surface-800'
-          }`}
-        >
-          <Search className="w-4 h-4" />
-          <span>Google Search Console</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('clarity')}
-          className={`pb-3 text-sm font-semibold border-b-2 flex items-center gap-2 transition-colors flex-shrink-0 ${
-            activeTab === 'clarity'
-              ? 'border-brand-600 text-brand-600'
-              : 'border-transparent text-surface-500 hover:text-surface-800'
-          }`}
-        >
-          <MousePointer className="w-4 h-4" />
-          <span>Microsoft Clarity</span>
-        </button>
+        {TABS.map(({ id, label, Icon }) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setActiveTab(id)}
+            className={`pb-3 text-sm font-semibold border-b-2 flex items-center gap-2 transition-colors flex-shrink-0 ${
+              activeTab === id
+                ? 'border-brand-600 text-brand-600'
+                : 'border-transparent text-surface-500 hover:text-surface-800'
+            }`}
+          >
+            <Icon className="w-4 h-4" />
+            <span>{label}</span>
+          </button>
+        ))}
       </div>
 
-      {/* Tab Panels */}
+      {activeTab === 'report' && (
+        <ReportSummaryView workspaceId={workspaceId} websiteId={websiteId} dateRange={dateRange} />
+      )}
+
       {activeTab === 'overview' && (
         <CrossPlatformOverviewView
           data={overviewData?.data}
@@ -115,26 +69,15 @@ export default function WebsiteAnalyticsDashboard({
       )}
 
       {activeTab === 'ga4' && (
-        <GA4DashboardView
-          workspaceId={workspaceId}
-          websiteId={websiteId}
-          dateRange={dateRange}
-        />
+        <GA4DashboardView workspaceId={workspaceId} websiteId={websiteId} dateRange={dateRange} />
       )}
 
       {activeTab === 'gsc' && (
-        <GSCDashboardView
-          workspaceId={workspaceId}
-          websiteId={websiteId}
-          dateRange={dateRange}
-        />
+        <GSCDashboardView workspaceId={workspaceId} websiteId={websiteId} dateRange={dateRange} />
       )}
 
       {activeTab === 'clarity' && (
-        <ClarityDashboardView
-          workspaceId={workspaceId}
-          websiteId={websiteId}
-        />
+        <ClarityDashboardView workspaceId={workspaceId} websiteId={websiteId} dateRange={dateRange} />
       )}
     </div>
   );

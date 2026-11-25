@@ -2,8 +2,54 @@
 // REST Controller for analytics dashboard data endpoints.
 
 import analyticsDataService from './analyticsData.service.js';
+import { reportDataAggregatorService } from '../reports/services/report-data-aggregator.service.js';
+import { BadRequestError } from '../../middleware/errorHandler.js';
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Validate optional YYYY-MM-DD range query params; both or neither. */
+function readDateRange(query) {
+  const { startDate, endDate } = query;
+  if (!startDate && !endDate) return {};
+  if (!DATE_RE.test(startDate || '') || !DATE_RE.test(endDate || '')) {
+    throw new BadRequestError('startDate and endDate must both be provided as YYYY-MM-DD.');
+  }
+  if (startDate > endDate) {
+    throw new BadRequestError('startDate must be on or before endDate.');
+  }
+  return { startDate, endDate };
+}
 
 export class AnalyticsController {
+  /**
+   * Everything the downloadable report contains, as JSON for the dashboard:
+   * KPIs with period comparison, executive summary, traffic-drop check,
+   * keyword opportunities, top queries/pages/sources, Clarity UX and SEO findings.
+   */
+  async getReportSummary(req, res, next) {
+    try {
+      const { workspaceId, websiteId } = req.params;
+      const { startDate, endDate } = readDateRange(req.query);
+      const periodEnd = endDate || new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+      const periodStart = startDate || new Date(Date.now() - 28 * 86400000).toISOString().slice(0, 10);
+
+      const data = await reportDataAggregatorService.aggregateReportData({
+        workspaceId,
+        websiteId,
+        reportType: 'DASHBOARD',
+        periodStart,
+        periodEnd,
+        includeAiSummary: false,
+      });
+
+      // Branding is only needed for rendered files
+      const { branding, ...rest } = data;
+      res.json({ success: true, data: rest });
+    } catch (err) {
+      next(err);
+    }
+  }
+
   async getOverview(req, res, next) {
     try {
       const { workspaceId, websiteId } = req.params;
@@ -168,7 +214,7 @@ export class AnalyticsController {
     try {
       const { workspaceId, websiteId } = req.params;
 
-      const result = await analyticsDataService.getClaritySummary(workspaceId, websiteId);
+      const result = await analyticsDataService.getClaritySummary(workspaceId, websiteId, readDateRange(req.query));
 
       res.json({ success: true, data: result });
     } catch (err) {
@@ -180,7 +226,7 @@ export class AnalyticsController {
     try {
       const { workspaceId } = req.params;
 
-      const result = await analyticsDataService.getAgencyOverview(workspaceId);
+      const result = await analyticsDataService.getAgencyOverview(workspaceId, readDateRange(req.query));
 
       res.json({ success: true, data: result });
     } catch (err) {

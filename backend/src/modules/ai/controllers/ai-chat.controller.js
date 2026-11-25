@@ -115,6 +115,22 @@ export class AIChatController {
       const { workspaceId } = req.params;
       const { ollamaUrl, modelName, temperature, maxTokens } = req.body;
 
+      // Only allow models that are actually installed, or chat would fail later
+      if (modelName) {
+        const existing = await prisma.aIModelConfiguration.findUnique({ where: { workspaceId } }).catch(() => null);
+        const url = ollamaUrl || existing?.ollamaUrl || OLLAMA_DEFAULTS.BASE_URL;
+        const installed = (await ollamaService.listModels(url)).map((m) => m.name);
+        if (installed.length > 0 && !installed.includes(modelName)) {
+          return res.status(400).json({
+            success: false,
+            message: `Model "${modelName}" is not installed in Ollama. Installed: ${installed.join(', ')}.`,
+          });
+        }
+      }
+      if (temperature !== undefined && (Number.isNaN(Number(temperature)) || Number(temperature) < 0 || Number(temperature) > 2)) {
+        return res.status(400).json({ success: false, message: 'Temperature must be between 0 and 2.' });
+      }
+
       const updated = await prisma.aIModelConfiguration.upsert({
         where: { workspaceId },
         create: {

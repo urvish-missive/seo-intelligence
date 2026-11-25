@@ -1,11 +1,27 @@
 // backend/src/modules/integrations/clarity/clarityImport.service.js
 // Service for running preset-based Microsoft Clarity manual data imports and deterministic normalisation into MySQL.
+//
+// Microsoft Clarity Data Export API response shape (project-live-insights):
+//   [
+//     { "metricName": "Traffic", "information": [
+//         { "totalSessionCount": "9554", "totalBotSessionCount": "8369",
+//           "distantUserCount": "189733", "PagesPerSessionPercentage": 1.0931,
+//           "OS": "Other" }                      <- dimension value keyed by dimension name
+//     ]},
+//     { "metricName": "DeadClickCount", "information": [ { "sessionsCount": "..", "subTotal": "..", ... } ] },
+//     { "metricName": "ScrollDepth",    "information": [ { "averageScrollDepth": 52.1, ... } ] },
+//     { "metricName": "PopularPages",   "information": [ { "url": "...", "visitsCount": ".." } ] },
+//     { "metricName": "Device",         "information": [ { "name": "PC", "sessionsCount": ".." } ] },
+//     ...
+//   ]
+// Counts are returned as strings. Rows live in `information` (not `rows`).
 
 import prisma from '../../../config/database.js';
 import { clarityClientService } from './clarityClient.service.js';
 import { clarityConnectionService } from './clarityConnection.service.js';
 import { NotFoundError, BadRequestError } from '../../../middleware/errorHandler.js';
 import logger from '../../../utils/logger.js';
+import { safeAuditLog } from '../../../utils/safeAuditLog.js';
 
 export const CLARITY_REPORT_PRESETS = {
   OVERVIEW: {
@@ -34,12 +50,85 @@ export const CLARITY_REPORT_PRESETS = {
   },
 };
 
+const WRITE_BATCH_SIZE = 200;
+
 /**
  * Returns current UTC date formatted as YYYY-MM-DD.
  */
 function getCurrentUtcDateString() {
-  const now = new Date();
-  return now.toISOString().split('T')[0];
+  return new Date().toISOString().split('T')[0];
+}
+
+const normaliseKey = (key) => String(key || '').toLowerCase().replace(/[\s_/\-]/g, '');
+
+/**
+ * Case/format-insensitive property lookup: pick(row, 'distinctUserCount', 'distantUserCount').
+ */
+export function pick(row, ...keys) {
+  if (!row || typeof row !== 'object') return undefined;
+  for (const key of keys) {
+    if (row[key] !== undefined && row[key] !== null && row[key] !== '') return row[key];
+  }
+  const wanted = keys.map(normaliseKey);
+  for (const [k, v] of Object.entries(row)) {
+    if (wanted.includes(normaliseKey(k)) && v !== undefined && v !== null && v !== '') return v;
+  }
+  return undefined;
+}
+
+export function num(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Rows of a metric group (Clarity uses `information`; `rows` kept as a fallback). */
+export function groupRows(group) {
+  if (Array.isArray(group?.information)) return group.information;
+  if (Array.isArray(group?.rows)) return group.rows;
+  return [];
+}
+
+/** Find a metric group by any of the given names (case/space/slash-insensitive). */
+export function findGroup(data, ...names) {
+  const wanted = names.map(normaliseKey);
+  return data.find((g) => wanted.includes(normaliseKey(g?.metricName)));
+}
+
+// Field accessors per metric family
+const trafficSessions = (row) => num(pick(row, 'totalSessionCount', 'sessionsCount', 'sessionCount', 'value'));
+const trafficBots = (row) => num(pick(row, 'totalBotSessionCount', 'botSessionCount'));
+const trafficUsers = (row) => num(pick(row, 'distantUserCount', 'distinctUserCount', 'userCount'));
+const trafficPagesPerSession = (row) => num(pick(row, 'PagesPerSessionPercentage', 'pagesPerSession'));
+const frictionCount = (row) => num(pick(row, 'subTotal', 'count', 'value'));
+const scrollDepth = (row) => num(pick(row, 'averageScrollDepth', 'scrollDepth', 'value'));
+const engagementSeconds = (row) => num(pick(row, 'activeTime', 'totalTime', 'value'));
+const listSessions = (row) => num(pick(row, 'sessionsCount', 'visitsCount', 'totalSessionCount', 'value'));
+
+/** Primary numeric value of a row, whatever metric it belongs to. */
+function primaryValue(row) {
+  return num(
+    pick(
+      row,
+      'subTotal',
+      'totalSessionCount',
+      'sessionsCount',
+      'visitsCount',
+      'averageScrollDepth',
+      'activeTime',
+      'totalTime',
+      'value'
+    )
+  );
+}
+
+async function runInBatches(ops) {
+  for (let i = 0; i < ops.length; i += WRITE_BATCH_SIZE) {
+    await prisma.$transaction(ops.slice(i, i + WRITE_BATCH_SIZE));
+  }
+}
+
+function isAuthError(err) {
+  return err?.statusCode === 401 || err?.statusCode === 403 || err?.status === 401 || err?.status === 403;
 }
 
 export class ClarityImportService {
@@ -113,15 +202,10 @@ export class ClarityImportService {
         throw new BadRequestError('Unexpected response format from Microsoft Clarity. Expected an array of metric groups.');
       }
 
-      // Calculate total rows returned across metric groups
-      let totalRowCount = 0;
-      for (const group of rawData) {
-        if (Array.isArray(group.rows)) {
-          totalRowCount += group.rows.length;
-        }
-      }
-
-      const isTruncated = totalRowCount >= 1000;
+      // Count rows across metric groups
+      const totalRowCount = rawData.reduce((sum, group) => sum + groupRows(group).length, 0);
+      // The API caps a response at 1,000 rows and cannot paginate
+      const isTruncated = rawData.some((group) => groupRows(group).length >= 1000);
 
       // 6. Create immutable snapshot record in database
       const snapshot = await prisma.clarityImportSnapshot.create({
@@ -142,13 +226,21 @@ export class ClarityImportService {
       });
 
       // 7. Deterministic Normalisation into Typed Metrics
-      await this.normaliseAndPersist({
+      const rowsInserted = await this.normaliseAndPersist({
         websiteId,
         dateStr,
         snapshotId: snapshot.id,
         preset,
+        dimensions: presetConfig.dimensions,
         data: rawData,
       });
+
+      if (totalRowCount === 0) {
+        logger.warn(
+          `Clarity returned no rows for ${connection.website.domain} (preset ${preset}). ` +
+            'The project may have no recorded sessions in the selected window.'
+        );
+      }
 
       // 8. Update IntegrationConnection status
       await prisma.integrationConnection.update({
@@ -162,6 +254,11 @@ export class ClarityImportService {
         },
       });
 
+      await prisma.clarityConnection.update({
+        where: { id: connection.clarityConnection.id },
+        data: { lastSyncAt: new Date(), lastError: null },
+      }).catch(() => {});
+
       // 9. Sync History record
       await prisma.syncHistory.create({
         data: {
@@ -172,7 +269,7 @@ export class ClarityImportService {
           startedAt: new Date(startTime),
           completedAt: new Date(),
           rowsFetched: totalRowCount,
-          rowsInserted: totalRowCount,
+          rowsInserted,
           apiCallsUsed: 1,
           dateRangeStart: windowStart.toISOString().split('T')[0],
           dateRangeEnd: windowEnd.toISOString().split('T')[0],
@@ -180,24 +277,22 @@ export class ClarityImportService {
       });
 
       // 10. Audit Log
-      await prisma.auditLog.create({
-        data: {
-          workspaceId,
-          userId: user?.id || null,
-          action: 'integration.clarity_imported',
-          entityType: 'Website',
-          entityId: websiteId,
-          metadata: {
-            preset,
-            numOfDays: days,
-            totalRowCount,
-            snapshotId: snapshot.id,
-          },
+      await safeAuditLog({
+        workspaceId,
+        userId: user?.id || null,
+        action: 'integration.clarity_imported',
+        entityType: 'Website',
+        entityId: websiteId,
+        metadata: {
+          preset,
+          numOfDays: days,
+          totalRowCount,
+          snapshotId: snapshot.id,
         },
       });
 
       logger.info(
-        `Clarity data import completed for ${connection.website.domain}. Snapshot: ${snapshot.id}, rows: ${totalRowCount}`
+        `Clarity data import completed for ${connection.website.domain}. Snapshot: ${snapshot.id}, rows: ${totalRowCount}, stored: ${rowsInserted}`
       );
 
       return {
@@ -206,6 +301,8 @@ export class ClarityImportService {
         preset,
         numOfDays: days,
         rowCount: totalRowCount,
+        rowsFetched: totalRowCount,
+        rowsInserted,
         isTruncated,
         quotaRemaining: quotaInfo.callsRemaining,
         durationMs: Date.now() - startTime,
@@ -213,14 +310,25 @@ export class ClarityImportService {
     } catch (importErr) {
       logger.error(`Clarity import failed for website ${websiteId}: ${importErr.message}`);
 
+      // A failed pull does not unmap the project; only auth failures need user action.
       await prisma.integrationConnection.update({
         where: { id: connection.id },
         data: {
-          status: 'FAILED',
+          status: isAuthError(importErr) ? 'EXPIRED' : 'CONNECTED',
           lastSyncStatus: 'FAILED',
           lastError: importErr.message,
         },
-      });
+      }).catch(() => {});
+
+      await prisma.clarityConnection.update({
+        where: { id: connection.clarityConnection.id },
+        data: {
+          lastError: importErr.message,
+          // Microsoft says the daily quota is used up: mirror that locally
+          ...(importErr.statusCode === 429 ? { apiCallsToday: 10 } : {}),
+          ...(isAuthError(importErr) ? { status: 'EXPIRED' } : {}),
+        },
+      }).catch(() => {});
 
       await prisma.syncHistory.create({
         data: {
@@ -234,8 +342,10 @@ export class ClarityImportService {
           rowsInserted: 0,
           apiCallsUsed: 1,
           errorMessage: importErr.message,
+          dateRangeStart: windowStart.toISOString().split('T')[0],
+          dateRangeEnd: windowEnd.toISOString().split('T')[0],
         },
-      });
+      }).catch(() => {});
 
       throw importErr;
     }
@@ -243,248 +353,250 @@ export class ClarityImportService {
 
   /**
    * Deterministic normalisation of raw Microsoft Clarity JSON into typed models.
+   * Returns the number of typed rows written.
    */
-  async normaliseAndPersist({ websiteId, dateStr, snapshotId, preset, data }) {
-    if (!Array.isArray(data)) return;
+  async normaliseAndPersist({ websiteId, dateStr, snapshotId, preset, dimensions, data }) {
+    if (!Array.isArray(data)) return 0;
 
-    // Helper to find metric group by name (handles case and whitespace)
-    const findGroup = (...names) => {
-      const normalized = names.map((n) => n.toLowerCase().replace(/[\s_]/g, ''));
-      return data.find((g) => {
-        const gName = (g.metricName || '').toLowerCase().replace(/[\s_]/g, '');
-        return normalized.includes(gName);
-      });
+    const dims = dimensions || CLARITY_REPORT_PRESETS[preset]?.dimensions || [];
+    const ops = [];
+
+    const trafficGroup = findGroup(data, 'Traffic');
+    const deadClickGroup = findGroup(data, 'DeadClickCount', 'Dead Click Count');
+    const rageClickGroup = findGroup(data, 'RageClickCount', 'Rage Click Count');
+    const excessiveScrollGroup = findGroup(data, 'ExcessiveScroll', 'Excessive Scroll');
+    const quickbackGroup = findGroup(data, 'QuickbackClick', 'Quick Back', 'Quickback');
+    const scriptErrorGroup = findGroup(data, 'ScriptErrorCount', 'Script Error Count');
+    const errorClickGroup = findGroup(data, 'ErrorClickCount', 'Error Click Count');
+    const scrollDepthGroup = findGroup(data, 'ScrollDepth', 'Scroll Depth');
+    const engagementGroup = findGroup(data, 'EngagementTime', 'Engagement Time');
+    const deviceGroup = findGroup(data, 'Device');
+    const countryGroup = findGroup(data, 'Country', 'Country/Region', 'CountryRegion');
+    const popularPagesGroup = findGroup(data, 'PopularPages', 'Popular Pages');
+
+    const sumRows = (group, fn) => groupRows(group).reduce((acc, row) => acc + fn(row), 0);
+    const avgRows = (group, fn) => {
+      const rows = groupRows(group);
+      return rows.length ? rows.reduce((acc, row) => acc + fn(row), 0) / rows.length : 0;
     };
 
-    const getFirst = (grp) => grp?.information?.[0] || grp?.rows?.[0] || {};
-    const getList = (grp) =>
-      Array.isArray(grp?.information) ? grp.information : (Array.isArray(grp?.rows) ? grp.rows : []);
-
-    // ─── A. OVERVIEW NORMALISATION ──────────────────────────────────────────
+    // ─── A. OVERVIEW: one site-wide daily row ──────────────────────────────
     if (preset === 'OVERVIEW' || !preset) {
-      const trafficGroup = findGroup('Traffic');
-      const rageClickGroup = findGroup('RageClickCount', 'Rage Click Count');
-      const deadClickGroup = findGroup('DeadClickCount', 'Dead Click Count');
-      const excessiveScrollGroup = findGroup('ExcessiveScroll', 'Excessive Scroll');
-      const quickbackGroup = findGroup('QuickbackClick', 'Quick Back', 'Quickback');
-      const scriptErrorGroup = findGroup('ScriptErrorCount', 'Script Error Count');
-      const errorClickGroup = findGroup('ErrorClickCount', 'Error Click Count');
-      const scrollDepthGroup = findGroup('ScrollDepth', 'Scroll Depth');
-      const engagementTimeGroup = findGroup('EngagementTime', 'Engagement Time');
+      const sessions = Math.round(sumRows(trafficGroup, trafficSessions));
+      const trafficRows = groupRows(trafficGroup);
+      // Weighted by sessions in case Clarity splits the totals across rows
+      const pagesPerSession = sessions > 0
+        ? trafficRows.reduce((acc, r) => acc + trafficPagesPerSession(r) * trafficSessions(r), 0) / sessions
+        : avgRows(trafficGroup, trafficPagesPerSession);
 
-      const trafficInfo = getFirst(trafficGroup);
-      const sessions = Math.round(
-        Number(trafficInfo.totalSessionCount ?? trafficInfo.sessionsCount ?? trafficInfo.value ?? 0)
-      );
-      const distinctUsers = Math.round(Number(trafficInfo.distinctUserCount ?? 0));
-      const botSessions = Math.round(Number(trafficInfo.totalBotSessionCount ?? 0));
-      const pagesPerSession = parseFloat(Number(trafficInfo.pagesPerSessionPercentage ?? 0).toFixed(2));
+      const values = {
+        sessions,
+        distinctUsers: Math.round(sumRows(trafficGroup, trafficUsers)),
+        botSessions: Math.round(sumRows(trafficGroup, trafficBots)),
+        pagesPerSession: parseFloat(pagesPerSession.toFixed(2)),
+        rageClickCount: Math.round(sumRows(rageClickGroup, frictionCount)),
+        deadClickCount: Math.round(sumRows(deadClickGroup, frictionCount)),
+        excessiveScrollCount: Math.round(sumRows(excessiveScrollGroup, frictionCount)),
+        quickbackClickCount: Math.round(sumRows(quickbackGroup, frictionCount)),
+        scriptErrorCount: Math.round(sumRows(scriptErrorGroup, frictionCount)),
+        errorClickCount: Math.round(sumRows(errorClickGroup, frictionCount)),
+        avgScrollDepth: parseFloat(avgRows(scrollDepthGroup, scrollDepth).toFixed(2)),
+        avgTimeOnPageSec: parseFloat(avgRows(engagementGroup, engagementSeconds).toFixed(2)),
+      };
 
-      const rageClicks = Math.round(
-        Number(getFirst(rageClickGroup).subTotal ?? getFirst(rageClickGroup).value ?? 0)
-      );
-      const deadClicks = Math.round(
-        Number(getFirst(deadClickGroup).subTotal ?? getFirst(deadClickGroup).value ?? 0)
-      );
-      const excessiveScrolls = Math.round(
-        Number(getFirst(excessiveScrollGroup).subTotal ?? getFirst(excessiveScrollGroup).value ?? 0)
-      );
-      const quickbacks = Math.round(
-        Number(getFirst(quickbackGroup).subTotal ?? getFirst(quickbackGroup).value ?? 0)
-      );
-      const scriptErrors = Math.round(
-        Number(getFirst(scriptErrorGroup).subTotal ?? getFirst(scriptErrorGroup).value ?? 0)
-      );
-      const errorClicks = Math.round(
-        Number(getFirst(errorClickGroup).subTotal ?? getFirst(errorClickGroup).value ?? 0)
+      ops.push(
+        prisma.clarityDailyMetric.upsert({
+          where: { websiteId_date: { websiteId, date: dateStr } },
+          update: values,
+          create: { websiteId, date: dateStr, ...values },
+        })
       );
 
-      const avgScrollDepth = parseFloat(
-        Number(getFirst(scrollDepthGroup).averageScrollDepth ?? getFirst(scrollDepthGroup).value ?? 0).toFixed(2)
-      );
-      const avgTimeOnPageSec = parseFloat(
-        Number(
-          getFirst(engagementTimeGroup).activeTime ??
-            getFirst(engagementTimeGroup).totalTime ??
-            getFirst(engagementTimeGroup).value ??
-            0
-        ).toFixed(2)
-      );
-
-      await prisma.clarityDailyMetric.upsert({
-        where: {
-          websiteId_date: {
-            websiteId,
-            date: dateStr,
-          },
-        },
-        update: {
-          sessions,
-          distinctUsers,
-          botSessions,
-          pagesPerSession,
-          rageClickCount: rageClicks,
-          deadClickCount: deadClicks,
-          excessiveScrollCount: excessiveScrolls,
-          quickbackClickCount: quickbacks,
-          scriptErrorCount: scriptErrors,
-          errorClickCount: errorClicks,
-          avgScrollDepth,
-          avgTimeOnPageSec,
-        },
-        create: {
-          websiteId,
-          date: dateStr,
-          sessions,
-          distinctUsers,
-          botSessions,
-          pagesPerSession,
-          rageClickCount: rageClicks,
-          deadClickCount: deadClicks,
-          excessiveScrollCount: excessiveScrolls,
-          quickbackClickCount: quickbacks,
-          scriptErrorCount: scriptErrors,
-          errorClickCount: errorClicks,
-          avgScrollDepth,
-          avgTimeOnPageSec,
-        },
-      });
-
-      // Persist Device breakdown from payload if available
-      const deviceGroup = findGroup('Device');
-      for (const row of getList(deviceGroup)) {
-        const device = (row.name || row.dimension1 || row.device || 'desktop').toLowerCase();
-        const devSessions = Math.round(Number(row.sessionsCount ?? row.value ?? 0));
-        await prisma.clarityDeviceMetric.upsert({
-          where: { websiteId_date_device: { websiteId, date: dateStr, device } },
-          update: { sessions: devSessions },
-          create: { websiteId, date: dateStr, device, sessions: devSessions },
-        }).catch(() => {});
+      // Device / Country / Popular pages lists that come with every response
+      for (const row of groupRows(deviceGroup)) {
+        const device = String(pick(row, 'name', 'Device') || 'unknown').toLowerCase().substring(0, 50);
+        const devSessions = Math.round(listSessions(row));
+        ops.push(
+          prisma.clarityDeviceMetric.upsert({
+            where: { websiteId_date_device: { websiteId, date: dateStr, device } },
+            update: { sessions: devSessions },
+            create: { websiteId, date: dateStr, device, sessions: devSessions },
+          })
+        );
       }
 
-      // Persist Country breakdown from payload if available
-      const countryGroup = findGroup('Country');
-      for (const row of getList(countryGroup)) {
-        const country = (row.name || row.dimension1 || row.country || 'Unknown').substring(0, 100);
-        const cSessions = Math.round(Number(row.sessionsCount ?? row.value ?? 0));
-        await prisma.clarityCountryMetric.upsert({
-          where: { websiteId_date_country: { websiteId, date: dateStr, country } },
-          update: { sessions: cSessions },
-          create: { websiteId, date: dateStr, country, sessions: cSessions },
-        }).catch(() => {});
+      for (const row of groupRows(countryGroup)) {
+        const country = String(pick(row, 'name', 'Country/Region', 'Country') || 'Unknown').substring(0, 100);
+        const cSessions = Math.round(listSessions(row));
+        ops.push(
+          prisma.clarityCountryMetric.upsert({
+            where: { websiteId_date_country: { websiteId, date: dateStr, country } },
+            update: { sessions: cSessions },
+            create: { websiteId, date: dateStr, country, sessions: cSessions },
+          })
+        );
       }
 
-      // Persist Popular Pages from payload if available
-      const popularPages = findGroup('PopularPages', 'PageTitle', 'URL');
-      for (const row of getList(popularPages).slice(0, 50)) {
-        const page = (row.url || row.name || '/').substring(0, 500);
-        const pSessions = Math.round(Number(row.visitsCount ?? row.sessionsCount ?? row.value ?? 0));
-        await prisma.clarityPageMetric.upsert({
-          where: { websiteId_date_page: { websiteId, date: dateStr, page } },
-          update: { sessions: pSessions },
-          create: { websiteId, date: dateStr, page, sessions: pSessions },
-        }).catch(() => {});
+      for (const row of groupRows(popularPagesGroup).slice(0, 200)) {
+        const page = String(pick(row, 'url', 'URL', 'name') || '').substring(0, 500);
+        if (!page) continue;
+        const pSessions = Math.round(listSessions(row));
+        ops.push(
+          prisma.clarityPageMetric.upsert({
+            where: { websiteId_date_page: { websiteId, date: dateStr, page } },
+            update: { sessions: pSessions },
+            create: { websiteId, date: dateStr, page, sessions: pSessions },
+          })
+        );
       }
     }
 
-    // ─── B. DEVICE BREAKDOWN (Dedicated Preset) ─────────────────────────────
+    // ─── B. DEVICE / COUNTRY: Traffic split by the dimension value ─────────
+    const dimensionTraffic = (dimName) => {
+      const buckets = new Map();
+      for (const row of groupRows(trafficGroup)) {
+        const key = pick(row, dimName);
+        if (key === undefined) continue;
+        const b = buckets.get(String(key)) || { sessions: 0, ppsWeight: 0 };
+        const s = trafficSessions(row);
+        b.sessions += s;
+        b.ppsWeight += trafficPagesPerSession(row) * s;
+        buckets.set(String(key), b);
+      }
+      return buckets;
+    };
+
     if (preset === 'DEVICE') {
-      const deviceGroup = findGroup('Device', 'Traffic');
-      for (const row of getList(deviceGroup)) {
-        const device = (row.name || row.dimension1 || row.device || 'desktop').toLowerCase();
-        const devSessions = Math.round(Number(row.sessionsCount ?? row.value ?? 0));
-
-        await prisma.clarityDeviceMetric.upsert({
-          where: {
-            websiteId_date_device: {
-              websiteId,
-              date: dateStr,
-              device,
-            },
-          },
-          update: { sessions: devSessions },
-          create: {
-            websiteId,
-            date: dateStr,
-            device,
-            sessions: devSessions,
-          },
-        }).catch(() => {});
+      let buckets = dimensionTraffic('Device');
+      if (buckets.size === 0) {
+        // Fallback: the standalone Device list ({ name, sessionsCount })
+        buckets = new Map(groupRows(deviceGroup).map((r) => [String(pick(r, 'name') || 'unknown'), { sessions: listSessions(r), ppsWeight: 0 }]));
+      }
+      for (const [name, b] of buckets) {
+        const device = name.toLowerCase().substring(0, 50);
+        const values = {
+          sessions: Math.round(b.sessions),
+          pagesPerSession: b.sessions > 0 ? parseFloat((b.ppsWeight / b.sessions).toFixed(2)) : 0,
+        };
+        ops.push(
+          prisma.clarityDeviceMetric.upsert({
+            where: { websiteId_date_device: { websiteId, date: dateStr, device } },
+            update: values,
+            create: { websiteId, date: dateStr, device, ...values },
+          })
+        );
       }
     }
 
-    // ─── C. COUNTRY BREAKDOWN (Dedicated Preset) ────────────────────────────
     if (preset === 'COUNTRY') {
-      const countryGroup = findGroup('Country', 'Traffic');
-      for (const row of getList(countryGroup)) {
-        const country = (row.name || row.dimension1 || row.country || 'Unknown').substring(0, 100);
-        const cSessions = Math.round(Number(row.sessionsCount ?? row.value ?? 0));
-
-        await prisma.clarityCountryMetric.upsert({
-          where: {
-            websiteId_date_country: {
-              websiteId,
-              date: dateStr,
-              country,
-            },
-          },
-          update: { sessions: cSessions },
-          create: {
-            websiteId,
-            date: dateStr,
-            country,
-            sessions: cSessions,
-          },
-        }).catch(() => {});
+      let buckets = dimensionTraffic('Country/Region');
+      if (buckets.size === 0) {
+        buckets = new Map(groupRows(countryGroup).map((r) => [String(pick(r, 'name') || 'Unknown'), { sessions: listSessions(r), ppsWeight: 0 }]));
+      }
+      for (const [name, b] of buckets) {
+        const country = name.substring(0, 100);
+        const values = {
+          sessions: Math.round(b.sessions),
+          pagesPerSession: b.sessions > 0 ? parseFloat((b.ppsWeight / b.sessions).toFixed(2)) : 0,
+        };
+        ops.push(
+          prisma.clarityCountryMetric.upsert({
+            where: { websiteId_date_country: { websiteId, date: dateStr, country } },
+            update: values,
+            create: { websiteId, date: dateStr, country, ...values },
+          })
+        );
       }
     }
 
-    // ─── D. URL BREAKDOWN (Dedicated Preset) ─────────────────────────────────
+    // ─── C. URL: per-page sessions + friction from every metric group ──────
     if (preset === 'URL') {
-      const popularPages = findGroup('PopularPages', 'Popular Pages', 'Traffic');
-      for (const row of getList(popularPages).slice(0, 200)) {
-        const page = (row.url || row.name || row.dimension1 || '/').substring(0, 500);
-        const pSessions = Math.round(Number(row.visitsCount ?? row.sessionsCount ?? row.value ?? 0));
+      const pages = new Map();
+      const bucket = (row) => {
+        const url = pick(row, 'URL', 'url');
+        if (!url) return null;
+        const key = String(url).substring(0, 500);
+        if (!pages.has(key)) {
+          pages.set(key, { sessions: 0, deadClicks: 0, rageClicks: 0, quickBacks: 0, scroll: [], time: [] });
+        }
+        return pages.get(key);
+      };
 
-        await prisma.clarityPageMetric.upsert({
-          where: {
-            websiteId_date_page: {
-              websiteId,
-              date: dateStr,
-              page,
-            },
-          },
-          update: { sessions: pSessions },
-          create: {
-            websiteId,
-            date: dateStr,
-            page,
-            sessions: pSessions,
-          },
-        }).catch(() => {});
-      }
-    }
+      for (const row of groupRows(trafficGroup)) { const p = bucket(row); if (p) p.sessions += trafficSessions(row); }
+      for (const row of groupRows(deadClickGroup)) { const p = bucket(row); if (p) p.deadClicks += frictionCount(row); }
+      for (const row of groupRows(rageClickGroup)) { const p = bucket(row); if (p) p.rageClicks += frictionCount(row); }
+      for (const row of groupRows(quickbackGroup)) { const p = bucket(row); if (p) p.quickBacks += frictionCount(row); }
+      for (const row of groupRows(scrollDepthGroup)) { const p = bucket(row); if (p) p.scroll.push(scrollDepth(row)); }
+      for (const row of groupRows(engagementGroup)) { const p = bucket(row); if (p) p.time.push(engagementSeconds(row)); }
 
-    // ─── E. DIMENSION METRICS (General Row Persistence) ─────────────────────
-    for (const group of data) {
-      if (Array.isArray(group.rows)) {
-        for (const row of group.rows.slice(0, 100)) {
-          await prisma.clarityDimensionMetric.create({
-            data: {
-              websiteId,
-              snapshotId,
-              date: dateStr,
-              metricName: group.metricName || 'Unknown',
-              dimension1Name: row.dimension1 ? 'dim1' : null,
-              dimension1Val: row.dimension1 ? String(row.dimension1).substring(0, 255) : null,
-              dimension2Name: row.dimension2 ? 'dim2' : null,
-              dimension2Val: row.dimension2 ? String(row.dimension2).substring(0, 255) : null,
-              value: parseFloat(Number(row.value || 0).toFixed(4)),
-            },
-          });
+      if (pages.size === 0) {
+        for (const row of groupRows(popularPagesGroup)) {
+          const p = bucket(row);
+          if (p) p.sessions += listSessions(row);
         }
       }
+
+      const mean = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
+      for (const [page, p] of pages) {
+        const values = {
+          sessions: Math.round(p.sessions),
+          deadClicks: Math.round(p.deadClicks),
+          rageClicks: Math.round(p.rageClicks),
+          quickBacks: Math.round(p.quickBacks),
+          avgScrollDepth: parseFloat(mean(p.scroll).toFixed(2)),
+          avgTimeOnPageSec: parseFloat(mean(p.time).toFixed(2)),
+        };
+        ops.push(
+          prisma.clarityPageMetric.upsert({
+            where: { websiteId_date_page: { websiteId, date: dateStr, page } },
+            update: values,
+            create: { websiteId, date: dateStr, page, ...values },
+          })
+        );
+      }
     }
+
+    await runInBatches(ops);
+
+    // ─── D. RAW DIMENSION METRICS (every preset, incl. BROWSER/ACQUISITION) ─
+    // Replace earlier rows for the same day + dimension set so re-imports don't duplicate.
+    await prisma.clarityDimensionMetric.deleteMany({
+      where: {
+        websiteId,
+        date: dateStr,
+        dimension1Name: dims[0] || null,
+        dimension2Name: dims[1] || null,
+      },
+    });
+
+    const dimensionRows = [];
+    for (const group of data) {
+      for (const row of groupRows(group)) {
+        const dimVals = dims.map((d) => {
+          const v = pick(row, d);
+          return v === undefined ? null : String(v).substring(0, 255);
+        });
+        dimensionRows.push({
+          websiteId,
+          snapshotId,
+          date: dateStr,
+          metricName: String(group.metricName || 'Unknown').substring(0, 100),
+          dimension1Name: dims[0] || null,
+          dimension1Val: dimVals[0] ?? null,
+          dimension2Name: dims[1] || null,
+          dimension2Val: dimVals[1] ?? null,
+          dimension3Name: dims[2] || null,
+          dimension3Val: dimVals[2] ?? null,
+          value: parseFloat(primaryValue(row).toFixed(4)),
+        });
+      }
+    }
+
+    for (let i = 0; i < dimensionRows.length; i += 500) {
+      await prisma.clarityDimensionMetric.createMany({ data: dimensionRows.slice(i, i + 500) });
+    }
+
+    return ops.length + dimensionRows.length;
   }
 }
 

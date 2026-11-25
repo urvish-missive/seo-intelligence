@@ -102,6 +102,7 @@ describe('Background Synchronisation Engine (BullMQ + Redis + Orchestrator)', ()
             status: 'CONNECTED',
             clarityConnection: {
               apiCallsToday: 10, // Quota exhausted
+              apiCallsResetAt: new Date(),
             },
           },
         ],
@@ -180,6 +181,7 @@ describe('Background Synchronisation Engine (BullMQ + Redis + Orchestrator)', ()
               projectId: 'proj-clarity-1',
               projectName: 'Clarity Web',
               apiCallsToday: 3,
+              apiCallsResetAt: new Date(),
               status: 'CONNECTED',
             },
           },

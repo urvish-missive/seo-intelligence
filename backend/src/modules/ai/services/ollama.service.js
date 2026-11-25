@@ -42,12 +42,13 @@ export class OllamaService {
       const rawModels = res.data?.models || [];
       const modelNames = rawModels.map(m => m.name);
 
-      // Check if target model or its prefix matches
-      const baseName = targetModel.split(':')[0].toLowerCase();
-      const modelPresent = modelNames.some(m =>
-        m.toLowerCase() === targetModel.toLowerCase() ||
-        m.toLowerCase().startsWith(baseName)
-      );
+      // Exact match; a model given without a tag means ":latest"
+      const normalise = (name) => {
+        const n = String(name).toLowerCase();
+        return n.includes(':') ? n : `${n}:latest`;
+      };
+      const wanted = normalise(targetModel);
+      const modelPresent = modelNames.some((m) => normalise(m) === wanted);
 
       return {
         available: true,
@@ -139,28 +140,53 @@ export class OllamaService {
         model: data.model || model,
       };
     } catch (err) {
-      const durationMs = Date.now() - startTime;
-      if (err.code === 'ECONNREFUSED' || err.message?.includes('ECONNREFUSED')) {
-        const error = new Error(`Local Ollama service is offline at ${url}. Please start Ollama before chatting.`);
-        error.code = 'OLLAMA_UNAVAILABLE';
-        error.status = 503;
-        throw error;
-      }
-      if (err.response?.status === 404 || err.message?.includes('not found')) {
-        const error = new Error(`Model "${model}" not found in local Ollama. Please run "ollama pull ${model}" to install it.`);
-        error.code = 'MODEL_NOT_FOUND';
-        error.status = 404;
-        throw error;
-      }
-
-      logger.error('Ollama chat invocation failed:', { error: err.message, durationMs });
-      throw err;
+      logger.error('Ollama chat invocation failed:', { error: err.message, durationMs: Date.now() - startTime });
+      throw this.toOllamaError(err, url, model);
     }
+  }
+
+  /**
+   * Map an axios/Ollama failure to a clear error with an HTTP-ish status.
+   */
+  toOllamaError(err, url, model) {
+    if (err.code === 'ECONNREFUSED' || err.message?.includes('ECONNREFUSED')) {
+      const error = new Error(`Local Ollama is not running at ${url}. Start it with "ollama serve" and try again.`);
+      error.code = 'OLLAMA_UNAVAILABLE';
+      error.status = 503;
+      error.statusCode = 503;
+      error.isOperational = true;
+      return error;
+    }
+    if (err.response?.status === 404) {
+      const error = new Error(`Model "${model}" is not installed in Ollama. Run "ollama pull ${model}" or pick an installed model in AI settings.`);
+      error.code = 'MODEL_NOT_FOUND';
+      error.status = 404;
+      error.statusCode = 404;
+      error.isOperational = true;
+      return error;
+    }
+    if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+      const error = new Error(`Ollama took longer than ${Math.round(this.timeout / 1000)}s to respond. Try a smaller model or a shorter question.`);
+      error.code = 'OLLAMA_TIMEOUT';
+      error.status = 504;
+      error.statusCode = 504;
+      error.isOperational = true;
+      return error;
+    }
+    if (err.name === 'CanceledError' || err.code === 'ERR_CANCELED') {
+      const error = new Error('Generation cancelled.');
+      error.code = 'CANCELLED';
+      error.statusCode = 499;
+      error.isOperational = true;
+      return error;
+    }
+    return err;
   }
 
   /**
    * Streaming Chat Completion.
    * Calls onChunk(chunkText) as tokens arrive from Ollama.
+   * Pass options.signal (AbortSignal) to stop generation when the client leaves.
    * @param {Array<{role: string, content: string}>} messages
    * @param {object} options
    * @param {Function} onChunk
@@ -175,91 +201,93 @@ export class OllamaService {
 
     const client = this.getClient(url);
 
+    let response;
     try {
-      const response = await client.post(
+      response = await client.post(
         '/api/chat',
         {
           model,
           messages,
           stream: true,
-          options: {
-            temperature,
-            num_ctx: numCtx,
-          },
+          options: { temperature, num_ctx: numCtx },
         },
-        {
-          responseType: 'stream',
-        }
+        { responseType: 'stream', signal: options.signal }
       );
+    } catch (err) {
+      throw this.toOllamaError(err, url, model);
+    }
 
-      let fullContent = '';
-      let promptTokens = 0;
-      let evalTokens = 0;
-      let finalModel = model;
+    let fullContent = '';
+    let promptTokens = 0;
+    let evalTokens = 0;
+    let finalModel = model;
 
-      return new Promise((resolve, reject) => {
-        let buffer = '';
+    return new Promise((resolve, reject) => {
+      let buffer = '';
+      let settled = false;
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        reject(err);
+      };
 
-        response.data.on('data', (chunk) => {
-          buffer += chunk.toString();
-          const lines = buffer.split('\n');
-          buffer = lines.pop(); // Keep partial line
+      const handleLine = (raw) => {
+        const trimmed = raw.trim();
+        if (!trimmed) return;
+        let parsed;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch {
+          return; // partial/garbled line
+        }
+        // Ollama reports failures (e.g. out of memory) as {"error": "..."} lines
+        if (parsed.error) {
+          const error = new Error(`Ollama error: ${parsed.error}`);
+          error.code = 'OLLAMA_ERROR';
+          error.statusCode = 502;
+          error.isOperational = true;
+          fail(error);
+          response.data.destroy?.();
+          return;
+        }
+        if (parsed.message?.content) {
+          fullContent += parsed.message.content;
+          onChunk(parsed.message.content);
+        }
+        if (parsed.prompt_eval_count) promptTokens = parsed.prompt_eval_count;
+        if (parsed.eval_count) evalTokens = parsed.eval_count;
+        if (parsed.model) finalModel = parsed.model;
+      };
 
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            try {
-              const parsed = JSON.parse(trimmed);
-              if (parsed.message?.content) {
-                fullContent += parsed.message.content;
-                onChunk(parsed.message.content);
-              }
-              if (parsed.prompt_eval_count) promptTokens = parsed.prompt_eval_count;
-              if (parsed.eval_count) evalTokens = parsed.eval_count;
-              if (parsed.model) finalModel = parsed.model;
-            } catch (jsonErr) {
-              // Ignore line parse glitches
-            }
-          }
-        });
+      response.data.on('data', (chunk) => {
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        lines.forEach(handleLine);
+      });
 
-        response.data.on('end', () => {
-          if (buffer.trim()) {
-            try {
-              const parsed = JSON.parse(buffer.trim());
-              if (parsed.message?.content) {
-                fullContent += parsed.message.content;
-                onChunk(parsed.message.content);
-              }
-              if (parsed.prompt_eval_count) promptTokens = parsed.prompt_eval_count;
-              if (parsed.eval_count) evalTokens = parsed.eval_count;
-            } catch {
-              // ignore
-            }
-          }
-
-          const durationMs = Date.now() - startTime;
-          resolve({
-            content: fullContent,
-            tokensUsed: promptTokens + evalTokens,
-            durationMs,
-            model: finalModel,
-          });
-        });
-
-        response.data.on('error', (err) => {
-          reject(err);
+      response.data.on('end', () => {
+        if (buffer.trim()) handleLine(buffer);
+        if (settled) return;
+        if (!fullContent.trim()) {
+          const error = new Error('The model returned an empty answer. Try rephrasing the question or using a larger model.');
+          error.code = 'EMPTY_RESPONSE';
+          error.statusCode = 502;
+          error.isOperational = true;
+          fail(error);
+          return;
+        }
+        settled = true;
+        resolve({
+          content: fullContent,
+          tokensUsed: promptTokens + evalTokens,
+          durationMs: Date.now() - startTime,
+          model: finalModel,
         });
       });
-    } catch (err) {
-      if (err.code === 'ECONNREFUSED' || err.message?.includes('ECONNREFUSED')) {
-        const error = new Error(`Local Ollama service is offline at ${url}.`);
-        error.code = 'OLLAMA_UNAVAILABLE';
-        error.status = 503;
-        throw error;
-      }
-      throw err;
-    }
+
+      response.data.on('error', (err) => fail(this.toOllamaError(err, url, model)));
+    });
   }
 }
 

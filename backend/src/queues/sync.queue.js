@@ -37,7 +37,7 @@ export async function addSyncJob(payload, customOptions = {}) {
   const jobName = `sync:${payload.provider}:${payload.websiteId}`;
   
   // Use deterministic jobId to prevent identical pending duplicates
-  const jobId = customOptions.jobId || `${payload.websiteId}:${payload.provider}:${payload.jobType || 'INCREMENTAL'}:${Date.now()}`;
+  const jobId = customOptions.jobId || `${payload.websiteId}-${payload.provider}-${payload.jobType || 'INCREMENTAL'}-${Date.now()}`;
 
   const job = await queue.add(jobName, payload, {
     ...defaultJobOptions,

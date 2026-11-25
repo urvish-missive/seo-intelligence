@@ -87,6 +87,7 @@ export function calculateComparisonMetric(current, previous, { inverseTrend = fa
     previous: prev,
     absoluteChange,
     percentChange,
+    percentage: percentChange, // alias read by the dashboard KPI cards
     status, // 'positive' | 'negative' | 'neutral'
     trend: absoluteChange > 0 ? 'up' : absoluteChange < 0 ? 'down' : 'flat',
   };

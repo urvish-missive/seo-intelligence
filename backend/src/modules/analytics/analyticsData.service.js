@@ -284,17 +284,17 @@ export class AnalyticsDataService {
       providers: {
         ga4: {
           connected: Boolean(
-            website.integrations?.some((i) => i.integrationType === 'GA4' && i.status === 'CONNECTED')
+            website.integrations?.some((i) => i.integrationType === 'GA4' && ['CONNECTED', 'SYNCING'].includes(i.status))
           ),
         },
         gsc: {
           connected: Boolean(
-            website.integrations?.some((i) => i.integrationType === 'GSC' && i.status === 'CONNECTED')
+            website.integrations?.some((i) => i.integrationType === 'GSC' && ['CONNECTED', 'SYNCING'].includes(i.status))
           ),
         },
         clarity: {
           connected: Boolean(
-            website.integrations?.some((i) => i.integrationType === 'CLARITY' && i.status === 'CONNECTED')
+            website.integrations?.some((i) => i.integrationType === 'CLARITY' && ['CONNECTED', 'SYNCING'].includes(i.status))
           ),
         },
       },
@@ -593,6 +593,7 @@ export class AnalyticsDataService {
         impressions: q.impressions,
         ctr: q.impressions > 0 ? parseFloat(((q.clicks / q.impressions) * 100).toFixed(2)) : 0,
         avgPosition: q.impressions > 0 ? parseFloat((q.posWeight / q.impressions).toFixed(1)) : 0,
+        position: q.impressions > 0 ? parseFloat((q.posWeight / q.impressions).toFixed(1)) : 0,
       }))
       .sort((a, b) => b.clicks - a.clicks);
 
@@ -642,6 +643,7 @@ export class AnalyticsDataService {
         impressions: p.impressions,
         ctr: p.impressions > 0 ? parseFloat(((p.clicks / p.impressions) * 100).toFixed(2)) : 0,
         avgPosition: p.impressions > 0 ? parseFloat((p.posWeight / p.impressions).toFixed(1)) : 0,
+        position: p.impressions > 0 ? parseFloat((p.posWeight / p.impressions).toFixed(1)) : 0,
       }))
       .sort((a, b) => b.clicks - a.clicks);
 
@@ -737,29 +739,85 @@ export class AnalyticsDataService {
   // ───────────────────────────────────────────────────────────────────────────
   // 4. CLARITY BEHAVIORAL DASHBOARD
   // ───────────────────────────────────────────────────────────────────────────
-  async getClaritySummary(workspaceId, websiteId) {
+  async getClaritySummary(workspaceId, websiteId, { startDate, endDate } = {}) {
     const website = await this.verifyWebsite(workspaceId, websiteId);
+    const hasRange = Boolean(startDate && endDate);
 
-    const [dailyMetrics, topPages, deviceBreakdown, latestSnapshot] = await Promise.all([
-      prisma.clarityDailyMetric.findMany({
-        where: { websiteId },
-        orderBy: { date: 'desc' },
-        take: 3, // Clarity provides rolling 1-3 days
-      }),
-      prisma.clarityPageMetric.findMany({
-        where: { websiteId },
-        orderBy: { rageClicks: 'desc' },
-        take: 15,
-      }),
-      prisma.clarityDeviceMetric.findMany({
-        where: { websiteId },
-        orderBy: { sessions: 'desc' },
-        take: 10,
-      }),
+    let dailyMetrics;
+    let topPages;
+    let deviceBreakdown;
+
+    if (hasRange) {
+      // Date-range mode: the scheduled Clarity sync stores one 1-day import per day,
+      // so the days in the range are added up and pages/devices merged across them.
+      const dateFilter = { gte: startDate, lte: endDate };
+      const [daily, pages, devices] = await Promise.all([
+        prisma.clarityDailyMetric.findMany({ where: { websiteId, date: dateFilter }, orderBy: { date: 'desc' } }),
+        prisma.clarityPageMetric.findMany({ where: { websiteId, date: dateFilter } }),
+        prisma.clarityDeviceMetric.findMany({ where: { websiteId, date: dateFilter } }),
+      ]);
+      dailyMetrics = daily;
+
+      const pageMap = new Map();
+      for (const p of pages) {
+        const e = pageMap.get(p.page) || { page: p.page, sessions: 0, rageClicks: 0, deadClicks: 0, quickBacks: 0, scrollW: 0, timeW: 0 };
+        e.sessions += p.sessions;
+        e.rageClicks += p.rageClicks;
+        e.deadClicks += p.deadClicks;
+        e.quickBacks += p.quickBacks;
+        e.scrollW += p.avgScrollDepth * p.sessions;
+        e.timeW += p.avgTimeOnPageSec * p.sessions;
+        pageMap.set(p.page, e);
+      }
+      topPages = Array.from(pageMap.values())
+        .map(({ scrollW, timeW, ...e }) => ({
+          ...e,
+          avgScrollDepth: e.sessions > 0 ? parseFloat((scrollW / e.sessions).toFixed(1)) : 0,
+          avgTimeOnPageSec: e.sessions > 0 ? Math.round(timeW / e.sessions) : 0,
+        }))
+        .sort((a, b) => b.rageClicks - a.rageClicks || b.deadClicks - a.deadClicks || b.sessions - a.sessions)
+        .slice(0, 15);
+
+      const deviceMap = new Map();
+      for (const d of devices) {
+        const e = deviceMap.get(d.device) || { device: d.device, sessions: 0 };
+        e.sessions += d.sessions;
+        deviceMap.set(d.device, e);
+      }
+      deviceBreakdown = Array.from(deviceMap.values()).sort((a, b) => b.sessions - a.sessions).slice(0, 10);
+    } else {
+      // No range: report only the latest import (a single rolling 1-3 day aggregate).
+      const [latestPageRow, latestDeviceRow] = await Promise.all([
+        prisma.clarityPageMetric.findFirst({ where: { websiteId }, orderBy: { date: 'desc' }, select: { date: true } }),
+        prisma.clarityDeviceMetric.findFirst({ where: { websiteId }, orderBy: { date: 'desc' }, select: { date: true } }),
+      ]);
+      [dailyMetrics, topPages, deviceBreakdown] = await Promise.all([
+        prisma.clarityDailyMetric.findMany({ where: { websiteId }, orderBy: { date: 'desc' }, take: 1 }),
+        latestPageRow
+          ? prisma.clarityPageMetric.findMany({
+              where: { websiteId, date: latestPageRow.date },
+              orderBy: [{ rageClicks: 'desc' }, { deadClicks: 'desc' }, { sessions: 'desc' }],
+              take: 15,
+            })
+          : Promise.resolve([]),
+        latestDeviceRow
+          ? prisma.clarityDeviceMetric.findMany({
+              where: { websiteId, date: latestDeviceRow.date },
+              orderBy: { sessions: 'desc' },
+              take: 10,
+            })
+          : Promise.resolve([]),
+      ]);
+    }
+
+    const [latestSnapshot] = await Promise.all([
       prisma.clarityImportSnapshot.findFirst({
+        where: { websiteId, workspaceId, preset: 'OVERVIEW' },
+        orderBy: { createdAt: 'desc' },
+      }).then((snap) => snap || prisma.clarityImportSnapshot.findFirst({
         where: { websiteId, workspaceId },
         orderBy: { createdAt: 'desc' },
-      }),
+      })),
     ]);
 
     const totals = dailyMetrics.reduce(
@@ -836,13 +894,24 @@ export class AnalyticsDataService {
       },
       topPages,
       deviceBreakdown,
+      dateRange: hasRange ? { startDate, endDate } : null,
+      daysWithData: dailyMetrics.length,
+      dailyTrend: [...dailyMetrics]
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .map((r) => ({
+          date: r.date,
+          sessions: r.sessions,
+          rageClickCount: r.rageClickCount,
+          deadClickCount: r.deadClickCount,
+          quickbackClickCount: r.quickbackClickCount,
+        })),
     };
   }
 
   // ───────────────────────────────────────────────────────────────────────────
   // 5. AGENCY & MULTI-WEBSITE OVERVIEW
   // ───────────────────────────────────────────────────────────────────────────
-  async getAgencyOverview(workspaceId) {
+  async getAgencyOverview(workspaceId, { startDate, endDate } = {}) {
     const clients = await prisma.client.findMany({
       where: { workspaceId, status: 'ACTIVE' },
       include: {
@@ -862,35 +931,81 @@ export class AnalyticsDataService {
       orderBy: { name: 'asc' },
     });
 
-    const thirtyDaysAgo = getDaysAgoDate(30);
+    const ranges = getComparisonDateRanges(startDate || getDaysAgoDate(30), endDate || getDaysAgoDate(1));
+    const cur = { gte: ranges.current.startDate, lte: ranges.current.endDate };
+    const prev = { gte: ranges.previous.startDate, lte: ranges.previous.endDate };
+    const sum = (rows, key) => rows.reduce((acc, r) => acc + (r[key] || 0), 0);
 
     const clientOverviews = await Promise.all(
       clients.map(async (client) => {
         const websitesData = await Promise.all(
           client.websites.map(async (web) => {
-            const [gscRecent, ga4Recent] = await Promise.all([
-              prisma.gSCDailyMetric.findMany({
-                where: { websiteId: web.id, date: { gte: thirtyDaysAgo } },
-              }),
-              prisma.gA4DailyMetric.findMany({
-                where: { websiteId: web.id, date: { gte: thirtyDaysAgo } },
-              }),
+            const [gscCur, ga4Cur, gscPrev, ga4Prev, clarityCur] = await Promise.all([
+              prisma.gSCDailyMetric.findMany({ where: { websiteId: web.id, date: cur } }),
+              prisma.gA4DailyMetric.findMany({ where: { websiteId: web.id, date: cur } }),
+              prisma.gSCDailyMetric.findMany({ where: { websiteId: web.id, date: prev } }),
+              prisma.gA4DailyMetric.findMany({ where: { websiteId: web.id, date: prev } }),
+              prisma.clarityDailyMetric.findMany({ where: { websiteId: web.id, date: cur } }),
             ]);
 
-            const clicks = gscRecent.reduce((sum, r) => sum + r.clicks, 0);
-            const impressions = gscRecent.reduce((sum, r) => sum + r.impressions, 0);
-            const sessions = ga4Recent.reduce((sum, r) => sum + r.sessions, 0);
-            const users = ga4Recent.reduce((sum, r) => sum + r.totalUsers, 0);
+            const clicks = sum(gscCur, 'clicks');
+            const impressions = sum(gscCur, 'impressions');
+            const sessions = sum(ga4Cur, 'sessions');
+            const organicSessions = sum(ga4Cur, 'organicSessions');
+            const users = sum(ga4Cur, 'totalUsers');
+            const posWeight = gscCur.reduce((acc, r) => acc + r.avgPosition * r.impressions, 0);
+            const ctr = impressions > 0 ? parseFloat(((clicks / impressions) * 100).toFixed(2)) : 0;
+            const avgPosition = impressions > 0 ? parseFloat((posWeight / impressions).toFixed(1)) : 0;
+            const frictionEvents =
+              sum(clarityCur, 'rageClickCount') + sum(clarityCur, 'deadClickCount') + sum(clarityCur, 'quickbackClickCount');
+            const previous = {
+              clicks: sum(gscPrev, 'clicks'),
+              impressions: sum(gscPrev, 'impressions'),
+              sessions: sum(ga4Prev, 'sessions'),
+              organicSessions: sum(ga4Prev, 'organicSessions'),
+              users: sum(ga4Prev, 'totalUsers'),
+            };
+            const changes = {
+              clicks: calculateComparisonMetric(clicks, previous.clicks).percentChange,
+              impressions: calculateComparisonMetric(impressions, previous.impressions).percentChange,
+              sessions: calculateComparisonMetric(sessions, previous.sessions).percentChange,
+              organicSessions: calculateComparisonMetric(organicSessions, previous.organicSessions).percentChange,
+              users: calculateComparisonMetric(users, previous.users).percentChange,
+            };
+            const isLive = (type) =>
+              web.integrations.some((i) => i.integrationType === type && ['CONNECTED', 'SYNCING'].includes(i.status));
 
             return {
               id: web.id,
+              websiteId: web.id,
               domain: web.domain,
               name: web.name,
+              websiteName: web.name,
+              clientId: client.id,
+              clientName: client.name,
               clicks,
               impressions,
+              ctr,
+              avgPosition,
               sessions,
               users,
-              integrations: web.integrations,
+              claritySessions: sum(clarityCur, 'sessions'),
+              changes,
+              previous,
+              // Shape read by the agency overview table
+              metrics: {
+                gscClicks: clicks,
+                gscImpressions: impressions,
+                gscCtr: ctr,
+                gscAvgPosition: avgPosition,
+                ga4Sessions: sessions,
+                ga4OrganicSessions: organicSessions,
+                ga4Users: users,
+                claritySessions: sum(clarityCur, 'sessions'),
+                clarityFrustratedSessions: frictionEvents,
+              },
+              integrationDetails: web.integrations,
+              integrations: { ga4: isLive('GA4'), gsc: isLive('GSC'), clarity: isLive('CLARITY') },
             };
           })
         );
@@ -904,10 +1019,15 @@ export class AnalyticsDataService {
       })
     );
 
+    const websites = clientOverviews.flatMap((c) => c.websites);
+
     return {
       workspaceId,
+      dateRange: ranges.current,
+      comparisonRange: ranges.previous,
       totalClients: clients.length,
       clients: clientOverviews,
+      websites,
     };
   }
 }

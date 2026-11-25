@@ -8,10 +8,79 @@ import { aiContextService } from './ai-context.service.js';
 import { aiGuardrailService } from './ai-guardrail.service.js';
 import { buildSystemPrompt } from '../prompts/system.prompt.js';
 import { buildIntentUserPrompt } from '../prompts/intent-prompts.js';
+import { OLLAMA_DEFAULTS } from '../config/ollama.config.js';
 import { NotFoundError, BadRequestError } from '../../../middleware/errorHandler.js';
 import logger from '../../../utils/logger.js';
 
+const DEFAULT_TITLE = 'New SEO Consultation';
+const HISTORY_MESSAGES = 4;
+const HISTORY_CHARS_PER_MESSAGE = 1200;
+const HEARTBEAT_MS = 15000;
+
+function makeTitle(text) {
+  return text.length > 40 ? `${text.slice(0, 37)}...` : text;
+}
+
+/** Earlier turns, oldest first, trimmed so the prompt stays within the context window. */
+function buildHistory(messagesNewestFirst = []) {
+  return [...messagesNewestFirst]
+    .reverse()
+    .filter((m) => m.content && ['USER', 'ASSISTANT'].includes(m.role))
+    .map((m) => ({
+      role: m.role.toLowerCase(),
+      content:
+        m.content.length > HISTORY_CHARS_PER_MESSAGE
+          ? `${m.content.slice(0, HISTORY_CHARS_PER_MESSAGE)} …`
+          : m.content,
+    }));
+}
+
 export class AIChatService {
+  /**
+   * Model settings for a workspace: request overrides > saved AI settings > env defaults.
+   */
+  async resolveModelOptions(workspaceId, options = {}) {
+    const config = await prisma.aIModelConfiguration
+      .findUnique({ where: { workspaceId } })
+      .catch(() => null);
+
+    return {
+      baseUrl: config?.ollamaUrl || OLLAMA_DEFAULTS.BASE_URL,
+      model: options.model || config?.modelName || OLLAMA_DEFAULTS.MODEL,
+      temperature:
+        options.temperature !== undefined && options.temperature !== null
+          ? Number(options.temperature)
+          : config?.temperature ?? OLLAMA_DEFAULTS.TEMPERATURE,
+    };
+  }
+
+  /**
+   * Shared prompt assembly for chat and streaming.
+   */
+  async preparePrompt(workspaceId, conversation, sanitizedText, websiteId) {
+    const { intent, contextString, evidenceMeta } = await aiContextService.buildContext(
+      workspaceId,
+      websiteId,
+      sanitizedText
+    );
+
+    const messages = [
+      { role: 'system', content: buildSystemPrompt({ domain: evidenceMeta.domain, clientName: evidenceMeta.client }) },
+      ...buildHistory(conversation.messages),
+      { role: 'user', content: buildIntentUserPrompt(intent, sanitizedText, contextString) },
+    ];
+
+    return { messages, evidenceMeta };
+  }
+
+  async touchConversation(conversation, sanitizedText) {
+    const data = { updatedAt: new Date() };
+    if (!conversation.title || conversation.title === DEFAULT_TITLE) {
+      data.title = makeTitle(sanitizedText);
+    }
+    await prisma.aIConversation.update({ where: { id: conversation.id }, data }).catch(() => {});
+  }
+
   /**
    * Create a new AI Conversation within a workspace.
    */
@@ -25,12 +94,12 @@ export class AIChatService {
       }
     }
 
-    const conversation = await prisma.aIConversation.create({
+    return prisma.aIConversation.create({
       data: {
         workspaceId,
         userId,
         websiteId,
-        title: title || 'New SEO Consultation',
+        title: title || DEFAULT_TITLE,
       },
       include: {
         website: {
@@ -42,8 +111,6 @@ export class AIChatService {
         },
       },
     });
-
-    return conversation;
   }
 
   /**
@@ -137,21 +204,16 @@ export class AIChatService {
    * Send a message and await the full JSON response.
    */
   async sendMessage(workspaceId, userId, conversationId, userText, options = {}) {
-    // 1. Validate & sanitize input
     const validation = aiGuardrailService.validateInput(userText);
     if (!validation.isValid) {
       throw new BadRequestError(validation.flag || 'Invalid message content');
     }
     const sanitizedText = validation.sanitized;
 
-    // 2. Fetch conversation
     const conversation = await prisma.aIConversation.findFirst({
       where: { id: conversationId, workspaceId },
       include: {
-        messages: {
-          orderBy: { createdAt: 'desc' },
-          take: 6, // previous messages for context
-        },
+        messages: { orderBy: { createdAt: 'desc' }, take: HISTORY_MESSAGES },
       },
     });
 
@@ -160,93 +222,54 @@ export class AIChatService {
     }
 
     const targetWebsiteId = options.websiteId || conversation.websiteId;
+    const [{ messages, evidenceMeta }, modelOptions] = await Promise.all([
+      this.preparePrompt(workspaceId, conversation, sanitizedText, targetWebsiteId),
+      this.resolveModelOptions(workspaceId, options),
+    ]);
 
-    // 3. Save User Message
     const userMessage = await prisma.aIMessage.create({
-      data: {
-        conversationId,
-        role: 'USER',
-        content: sanitizedText,
-      },
+      data: { conversationId, role: 'USER', content: sanitizedText },
     });
 
-    // 4. Retrieve Grounded Context Data
-    const { intent, contextString, evidenceMeta } = await aiContextService.buildContext(
-      workspaceId,
-      targetWebsiteId,
-      sanitizedText
-    );
+    let ollamaResponse;
+    try {
+      ollamaResponse = await ollamaService.chat(messages, modelOptions);
+      if (!ollamaResponse.content?.trim()) {
+        throw new Error('The model returned an empty answer. Try rephrasing the question or using a larger model.');
+      }
+    } catch (err) {
+      // Don't leave an unanswered question in the thread (it would be replayed as history)
+      await prisma.aIMessage.delete({ where: { id: userMessage.id } }).catch(() => {});
+      throw err;
+    }
 
-    // 5. Build System Prompt & Messages History
-    const systemPrompt = buildSystemPrompt({
-      domain: evidenceMeta.domain,
-      clientName: evidenceMeta.client,
-    });
-
-    const userPromptWithContext = buildIntentUserPrompt(intent, sanitizedText, contextString);
-
-    // Assemble conversation history (oldest first)
-    const historyMessages = (conversation.messages || [])
-      .reverse()
-      .map(m => ({
-        role: m.role.toLowerCase(),
-        content: m.content,
-      }));
-
-    const messages = [
-      { role: 'system', content: systemPrompt },
-      ...historyMessages,
-      { role: 'user', content: userPromptWithContext },
-    ];
-
-    // 6. Invoke Local Ollama Model
-    const ollamaResponse = await ollamaService.chat(messages, {
-      model: options.model,
-      temperature: options.temperature,
-    });
-
-    // 7. Save Assistant Message
     const assistantMessage = await prisma.aIMessage.create({
       data: {
         conversationId,
         role: 'ASSISTANT',
         content: ollamaResponse.content,
-        toolsUsed: evidenceMeta,
+        toolsUsed: { ...evidenceMeta, model: ollamaResponse.model },
         tokensUsed: ollamaResponse.tokensUsed,
         durationMs: ollamaResponse.durationMs,
       },
     });
 
-    // 8. Update conversation title if this is the first exchange
-    if (conversation.title === 'New SEO Consultation' || !conversation.title) {
-      const generatedTitle = sanitizedText.length > 40
-        ? sanitizedText.slice(0, 37) + '...'
-        : sanitizedText;
-      await prisma.aIConversation.update({
-        where: { id: conversationId },
-        data: { title: generatedTitle, updatedAt: new Date() },
-      }).catch(() => {});
-    } else {
-      await prisma.aIConversation.update({
-        where: { id: conversationId },
-        data: { updatedAt: new Date() },
-      }).catch(() => {});
-    }
+    await this.touchConversation(conversation, sanitizedText);
 
-    return {
-      userMessage,
-      assistantMessage,
-      evidenceMeta,
-    };
+    return { userMessage, assistantMessage, evidenceMeta };
   }
 
   /**
    * Stream a chat reply via Server-Sent Events (SSE).
    */
   async streamMessage(workspaceId, userId, conversationId, userText, res, options = {}) {
+    const send = (event, data) => {
+      if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
     const validation = aiGuardrailService.validateInput(userText);
     if (!validation.isValid) {
-      res.write(`event: error\ndata: ${JSON.stringify({ error: validation.flag })}\n\n`);
+      send('error', { error: validation.flag || 'Invalid message content' });
       return res.end();
     }
     const sanitizedText = validation.sanitized;
@@ -254,99 +277,75 @@ export class AIChatService {
     const conversation = await prisma.aIConversation.findFirst({
       where: { id: conversationId, workspaceId },
       include: {
-        messages: {
-          orderBy: { createdAt: 'desc' },
-          take: 4, // keep prompt small: local CPU inference is slow
-        },
+        messages: { orderBy: { createdAt: 'desc' }, take: HISTORY_MESSAGES },
       },
     });
 
     if (!conversation) {
-      res.write(`event: error\ndata: ${JSON.stringify({ error: 'Conversation not found' })}\n\n`);
+      send('error', { error: 'Conversation not found' });
       return res.end();
     }
 
-    const targetWebsiteId = options.websiteId || conversation.websiteId;
-
-    // 1. Save User Message
-    const userMessage = await prisma.aIMessage.create({
-      data: {
-        conversationId,
-        role: 'USER',
-        content: sanitizedText,
-      },
+    // Stop generating if the browser goes away (local CPU inference is expensive)
+    const abort = new AbortController();
+    let clientGone = false;
+    res.on('close', () => {
+      if (!res.writableEnded) {
+        clientGone = true;
+        abort.abort();
+      }
     });
 
-    // 2. Build Grounded Context
-    const { intent, contextString, evidenceMeta } = await aiContextService.buildContext(
-      workspaceId,
-      targetWebsiteId,
-      sanitizedText
-    );
+    // Keep proxies from closing the connection while the model reads the prompt
+    const heartbeat = setInterval(() => {
+      if (!res.writableEnded) res.write(': keep-alive\n\n');
+    }, HEARTBEAT_MS);
 
-    // Send start event to client with metadata
-    res.write(`event: start\ndata: ${JSON.stringify({ userMessageId: userMessage.id, evidenceMeta })}\n\n`);
-
-    const systemPrompt = buildSystemPrompt({
-      domain: evidenceMeta.domain,
-      clientName: evidenceMeta.client,
-    });
-    const userPromptWithContext = buildIntentUserPrompt(intent, sanitizedText, contextString);
-
-    const historyMessages = (conversation.messages || [])
-      .reverse()
-      .map(m => ({
-        role: m.role.toLowerCase(),
-        content: m.content,
-      }));
-
-    const messages = [
-      { role: 'system', content: systemPrompt },
-      ...historyMessages,
-      { role: 'user', content: userPromptWithContext },
-    ];
-
+    let userMessage = null;
     try {
+      const targetWebsiteId = options.websiteId || conversation.websiteId;
+      const [{ messages, evidenceMeta }, modelOptions] = await Promise.all([
+        this.preparePrompt(workspaceId, conversation, sanitizedText, targetWebsiteId),
+        this.resolveModelOptions(workspaceId, options),
+      ]);
+
+      userMessage = await prisma.aIMessage.create({
+        data: { conversationId, role: 'USER', content: sanitizedText },
+      });
+
+      send('start', { userMessageId: userMessage.id, evidenceMeta, model: modelOptions.model });
+
       const result = await ollamaService.streamChat(
         messages,
-        {
-          model: options.model,
-          temperature: options.temperature,
-        },
-        (token) => {
-          res.write(`event: token\ndata: ${JSON.stringify({ token })}\n\n`);
-        }
+        { ...modelOptions, signal: abort.signal },
+        (token) => send('token', { token })
       );
 
-      // Save assistant message to database
       const assistantMessage = await prisma.aIMessage.create({
         data: {
           conversationId,
           role: 'ASSISTANT',
           content: result.content,
-          toolsUsed: evidenceMeta,
+          toolsUsed: { ...evidenceMeta, model: result.model },
           tokensUsed: result.tokensUsed,
           durationMs: result.durationMs,
         },
       });
 
-      // Update conversation title if needed
-      if (conversation.title === 'New SEO Consultation' || !conversation.title) {
-        const generatedTitle = sanitizedText.length > 40
-          ? sanitizedText.slice(0, 37) + '...'
-          : sanitizedText;
-        await prisma.aIConversation.update({
-          where: { id: conversationId },
-          data: { title: generatedTitle, updatedAt: new Date() },
-        }).catch(() => {});
-      }
+      await this.touchConversation(conversation, sanitizedText);
 
-      res.write(`event: done\ndata: ${JSON.stringify({ assistantMessageId: assistantMessage.id, durationMs: result.durationMs })}\n\n`);
-      res.end();
+      send('done', { assistantMessageId: assistantMessage.id, durationMs: result.durationMs, model: result.model });
     } catch (err) {
-      logger.error('Streaming chat failed:', { error: err.message });
-      res.write(`event: error\ndata: ${JSON.stringify({ error: err.message })}\n\n`);
-      res.end();
+      if (userMessage) {
+        await prisma.aIMessage.delete({ where: { id: userMessage.id } }).catch(() => {});
+      }
+      if (!clientGone) {
+        logger.error('Streaming chat failed:', { error: err.message, code: err.code });
+        send('error', { error: err.message, code: err.code || null });
+      }
+    } finally {
+      clearInterval(heartbeat);
+      if (!res.writableEnded) res.end();
     }
   }
 
@@ -363,51 +362,45 @@ export class AIChatService {
       throw new NotFoundError(`Website ${websiteId} not found.`);
     }
 
-    const { contextString, evidenceMeta } = await aiContextService.buildContext(
-      workspaceId,
-      websiteId,
-      'Generate a comprehensive SEO performance and opportunity analysis.'
+    const [{ contextString, evidenceMeta }, modelOptions] = await Promise.all([
+      aiContextService.buildContext(workspaceId, websiteId, 'Overall SEO performance, opportunities and findings'),
+      this.resolveModelOptions(workspaceId),
+    ]);
+
+    const userPrompt = `DATA (synced from this agency's GA4, Google Search Console and Microsoft Clarity):
+"""
+${contextString}
+"""
+
+Write an executive SEO performance report for ${website.domain} using only the DATA above, with these sections:
+1. Executive summary
+2. Traffic and engagement (GA4)
+3. Search visibility and keyword opportunities (Search Console)
+4. UX friction (Clarity)
+5. Open SEO findings and risks
+6. Prioritised 30-60-90 day action plan
+If a section has no data, say which integration is missing instead of guessing.`;
+
+    const response = await ollamaService.chat(
+      [
+        { role: 'system', content: buildSystemPrompt({ domain: website.domain, clientName: website.client?.name }) },
+        { role: 'user', content: userPrompt },
+      ],
+      modelOptions
     );
 
-    const systemPrompt = buildSystemPrompt({
-      domain: website.domain,
-      clientName: website.client?.name,
-    });
-
-    const userPrompt = `Generate a rigorous, executive-level SEO Performance & Opportunity Report for ${website.domain}.
-
-DATA EVIDENCE:
-${contextString}
-
-Structure your report into:
-1. Executive Summary & Growth Trajectory
-2. Traffic & Engagement Shifts (GA4 Analysis)
-3. Search Visibility & Keyword Opportunities (GSC Striking Distance)
-4. UX Friction & Conversion Barriers (Clarity Heatmap Insights)
-5. Critical Deterministic Findings & Decay Risks
-6. Prioritised 30-60-90 Day SEO Action Plan`;
-
-    const messages = [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt },
-    ];
-
-    const response = await ollamaService.chat(messages);
-
-    const analysis = await prisma.aIAnalysis.create({
+    return prisma.aIAnalysis.create({
       data: {
         websiteId,
         analysisType,
         inputContext: evidenceMeta,
         outputSummary: response.content,
         recommendations: evidenceMeta,
-        model: response.model || 'qwen2.5:7b',
+        model: response.model || modelOptions.model,
         tokensUsed: response.tokensUsed,
         durationMs: response.durationMs,
       },
     });
-
-    return analysis;
   }
 }
 

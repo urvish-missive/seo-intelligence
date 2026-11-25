@@ -11,6 +11,63 @@ import logger from '../../../utils/logger.js';
 const analyticsService = new AnalyticsDataService();
 const findingService = new SEOFindingService();
 
+const cur = (m) => (m && typeof m === 'object' ? (m.current ?? 0) : (m ?? 0));
+const prv = (m) => (m && typeof m === 'object' ? (m.previous ?? 0) : 0);
+const pct = (m) => (m && typeof m === 'object' && m.percentChange !== undefined ? m.percentChange : null);
+
+/** Flatten GA4 comparison metrics into the shape the report generators read. */
+export function flattenGA4Summary(ga4Summary) {
+  const s = ga4Summary?.summary;
+  if (!s) return { summary: null, comparison: null };
+  return {
+    summary: {
+      sessions: cur(s.sessions),
+      totalUsers: cur(s.totalUsers),
+      activeUsers: cur(s.activeUsers),
+      newUsers: cur(s.newUsers),
+      organicSessions: cur(s.organicSessions),
+      engagedSessions: cur(s.engagedSessions),
+      engagementRate: cur(s.engagementRate),
+      avgEngagementTime: cur(s.avgEngagementTime),
+      bounceRate: cur(s.bounceRate),
+      screenPageViews: cur(s.screenPageViews),
+      conversions: cur(s.conversions),
+    },
+    comparison: {
+      previousSessions: prv(s.sessions),
+      previousUsers: prv(s.totalUsers),
+      sessionsChangePercent: pct(s.sessions),
+      usersChangePercent: pct(s.totalUsers),
+      organicSessionsChangePercent: pct(s.organicSessions),
+      engagementRateChangePercent: pct(s.engagementRate),
+      conversionsChangePercent: pct(s.conversions),
+    },
+  };
+}
+
+/** Flatten GSC comparison metrics into the shape the report generators read. */
+export function flattenGSCSummary(gscSummary) {
+  const s = gscSummary?.summary;
+  if (!s) return { summary: null, comparison: null };
+  return {
+    summary: {
+      clicks: cur(s.clicks),
+      impressions: cur(s.impressions),
+      ctr: cur(s.ctr),
+      averagePosition: cur(s.avgPosition),
+      avgPosition: cur(s.avgPosition),
+    },
+    comparison: {
+      previousClicks: prv(s.clicks),
+      previousImpressions: prv(s.impressions),
+      clicksChangePercent: pct(s.clicks),
+      impressionsChangePercent: pct(s.impressions),
+      ctrChangePercent: pct(s.ctr),
+      positionChange: s.avgPosition ? s.avgPosition.absoluteChange : null,
+    },
+  };
+}
+
 export class ReportDataAggregatorService {
   /**
    * Aggregate complete dataset for a specific report configuration.
@@ -72,9 +129,9 @@ export class ReportDataAggregatorService {
 
     // 4. Inspect active integrations & data freshness
     const integrationsStatus = {
-      GA4: website.integrations.find(i => (i.integrationType === 'GA4') && i.status === 'CONNECTED'),
-      GSC: website.integrations.find(i => (i.integrationType === 'GSC' || i.integrationType === 'GOOGLE_SEARCH_CONSOLE') && i.status === 'CONNECTED'),
-      CLARITY: website.integrations.find(i => (i.integrationType === 'CLARITY' || i.integrationType === 'MICROSOFT_CLARITY') && i.status === 'CONNECTED'),
+      GA4: website.integrations.find(i => (i.integrationType === 'GA4') && ['CONNECTED', 'SYNCING'].includes(i.status)),
+      GSC: website.integrations.find(i => (i.integrationType === 'GSC' || i.integrationType === 'GOOGLE_SEARCH_CONSOLE') && ['CONNECTED', 'SYNCING'].includes(i.status)),
+      CLARITY: website.integrations.find(i => (i.integrationType === 'CLARITY' || i.integrationType === 'MICROSOFT_CLARITY') && ['CONNECTED', 'SYNCING'].includes(i.status)),
     };
 
     const dataFreshness = {
@@ -151,16 +208,22 @@ export class ReportDataAggregatorService {
       }).catch(() => null) : null,
 
       // Clarity UX Insights
-      integrationsStatus.CLARITY ? analyticsService.getClaritySummary(workspaceId, websiteId).catch(() => null) : null,
+      integrationsStatus.CLARITY ? analyticsService.getClaritySummary(workspaceId, websiteId, { startDate: periodStart, endDate: periodEnd }).catch(() => null) : null,
 
       // SEO Findings
       findingService.getFindings(workspaceId, websiteId, { limit: 20 }).catch(() => ({ findings: [], total: 0 })),
     ]);
 
+    // Analytics summaries return { current, previous, percentChange } per metric;
+    // the PDF/Excel generators and dashboard expect flat numbers + change percents.
+    const ga4Flat = flattenGA4Summary(ga4Summary);
+    const gscFlat = flattenGSCSummary(gscSummary);
+
     // 6. Calculate Keyword Opportunities (Striking distance: rank pos 4 - 20)
     let keywordOpportunities = [];
     if (gscQueries?.queries) {
       keywordOpportunities = gscQueries.queries
+        .map(q => ({ ...q, position: q.position ?? q.avgPosition }))
         .filter(q => q.position >= 4 && q.position <= 20)
         .sort((a, b) => b.impressions - a.impressions)
         .slice(0, 15)
@@ -178,16 +241,14 @@ export class ReportDataAggregatorService {
     }
 
     // 7. Calculate Traffic Drop Highlights
-    const trafficChange = ga4Summary?.comparison?.sessionsChangePercent !== undefined
-      ? ga4Summary.comparison.sessionsChangePercent
-      : (overviewData?.comparison?.sessionsChangePercent || 0);
+    const trafficChange = ga4Flat.comparison?.sessionsChangePercent ?? 0;
 
     const trafficDropAnalysis = {
       detected: trafficChange < -5,
       changePercent: trafficChange,
       status: trafficChange < -15 ? 'CRITICAL_DROP' : trafficChange < -5 ? 'MODERATE_DECLINE' : 'STABLE_OR_GROWING',
-      currentSessions: ga4Summary?.summary?.sessions || 0,
-      previousSessions: ga4Summary?.comparison?.previousSessions || 0,
+      currentSessions: ga4Flat.summary?.sessions || 0,
+      previousSessions: ga4Flat.comparison?.previousSessions || 0,
       affectedPages: (ga4LandingPages?.pages || [])
         .filter(p => p.sessionsChangePercent < -10)
         .slice(0, 5),
@@ -200,8 +261,8 @@ export class ReportDataAggregatorService {
       domain: website.domain,
       periodStart,
       periodEnd,
-      ga4Summary,
-      gscSummary,
+      ga4Summary: ga4Flat,
+      gscSummary: gscFlat,
       trafficChange,
       seoFindings: seoFindingsResult?.findings || [],
       keywordOpportunities,
@@ -230,15 +291,17 @@ export class ReportDataAggregatorService {
         overview: overviewData,
         ga4: {
           available: !!integrationsStatus.GA4,
-          summary: ga4Summary?.summary || null,
-          comparison: ga4Summary?.comparison || null,
+          summary: ga4Flat.summary,
+          comparison: ga4Flat.comparison,
+          trends: ga4Summary?.trends || [],
           sources: ga4Sources?.sources || [],
           landingPages: ga4LandingPages?.pages || [],
         },
         gsc: {
           available: !!integrationsStatus.GSC,
-          summary: gscSummary?.summary || null,
-          comparison: gscSummary?.comparison || null,
+          summary: gscFlat.summary,
+          comparison: gscFlat.comparison,
+          trends: gscSummary?.trends || [],
           queries: gscQueries?.queries || [],
           pages: gscPages?.pages || [],
           opportunities: keywordOpportunities,
@@ -286,7 +349,7 @@ export class ReportDataAggregatorService {
     const sessions = ga4Summary?.summary?.sessions || 0;
     const clicks = gscSummary?.summary?.clicks || 0;
     const impressions = gscSummary?.summary?.impressions || 0;
-    const openFindingsCount = seoFindings.filter(f => f.status === 'OPEN').length;
+    const openFindingsCount = seoFindings.filter(f => !['RESOLVED', 'DISMISSED', 'IGNORED', 'CLOSED'].includes(String(f.status).toUpperCase())).length;
 
     // Rule-based deterministic summary
     let trendDirection = 'stable';

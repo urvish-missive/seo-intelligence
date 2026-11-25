@@ -10,168 +10,146 @@ import {
   FileCode,
   Smartphone,
   Info,
-  Calendar,
-  CheckCircle2,
+  Clock,
+  Users,
 } from 'lucide-react';
 import MetricKpiCard from './MetricKpiCard.jsx';
 import BarBreakdownChart from './BarBreakdownChart.jsx';
 import DataTableWithFilter from './DataTableWithFilter.jsx';
+import TrendLineChart from './TrendLineChart.jsx';
 import { useGetClaritySummaryQuery } from '../analyticsApi.js';
 
-export default function ClarityDashboardView({
-  workspaceId,
-  websiteId,
-}) {
-  const { data: clarityData, isLoading } = useGetClaritySummaryQuery(
-    { workspaceId, websiteId },
-    { skip: !workspaceId || !websiteId }
+export default function ClarityDashboardView({ workspaceId, websiteId, dateRange }) {
+  const { data: clarityData, isLoading, isFetching } = useGetClaritySummaryQuery(
+    { workspaceId, websiteId, startDate: dateRange?.startDate, endDate: dateRange?.endDate },
+    { skip: !workspaceId || !websiteId || !dateRange?.startDate }
   );
 
   if (isLoading) {
     return (
       <div className="card p-12 text-center text-sm text-surface-400">
-        Loading Microsoft Clarity behavioral analytics…
+        Loading Microsoft Clarity behavioural analytics…
       </div>
     );
   }
 
-  const summary = clarityData?.data?.summary;
-  const topPages = clarityData?.data?.topPages || [];
-  const deviceBreakdown = clarityData?.data?.deviceBreakdown || [];
-  const snapshotWindow = clarityData?.data?.reportingWindow;
+  const data = clarityData?.data || {};
+  const f = data.friction || {};
+  const topPages = data.topPages || [];
+  const deviceBreakdown = data.deviceBreakdown || [];
+  const dailyTrend = data.dailyTrend || [];
+  const lastImport = data.reportingWindow?.lastImportAt;
+  const daysWithData = data.daysWithData || 0;
 
   return (
-    <div className="space-y-6">
-      {/* Microsoft Clarity Data Export API Limit & Reporting Window Banner */}
-      <div className="p-4 rounded-xl border border-amber-200 bg-amber-50/70 text-amber-900 text-xs space-y-1.5">
+    <div className={`space-y-6 ${isFetching ? 'opacity-70 transition-opacity' : ''}`}>
+      <div className="p-4 rounded-xl border border-amber-200 bg-amber-50/70 text-amber-900 text-xs space-y-1">
         <div className="flex items-center gap-2 font-semibold">
           <Info className="w-4 h-4 text-amber-700" />
-          <span>Microsoft Clarity Data Export Snapshot Window</span>
+          <span>How Clarity history works</span>
         </div>
         <p className="text-amber-800">
-          Clarity behavioral statistics reflect rolling snapshots provided via Microsoft Clarity Data Export API (limited to 10 API calls per day per project).
-          {snapshotWindow ? (
-            <span className="font-semibold ml-1">
-              Currently active snapshot: {snapshotWindow.startDate} to {snapshotWindow.endDate} ({snapshotWindow.numOfDays} days, generated at {new Date(snapshotWindow.createdAt).toLocaleString()}).
-            </span>
-          ) : (
-            ' No snapshot window imported yet. Use the Background Sync tab or Import button to fetch recent telemetry.'
-          )}
+          Microsoft Clarity only exports the last 1–3 days, so history here builds up from the daily sync.
+          {' '}
+          {daysWithData > 0
+            ? `This period has ${daysWithData} day${daysWithData === 1 ? '' : 's'} of Clarity data.`
+            : 'No Clarity data has been imported for this period yet.'}
+          {lastImport && ` Last import: ${new Date(lastImport).toLocaleString()}.`}
         </p>
       </div>
 
-      {/* Primary Friction Scorecards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <MetricKpiCard
-          title="Total Sessions Tracked"
-          value={summary?.totalSessions}
-          icon={MousePointer}
-          iconColor="blue"
-          compareEnabled={false}
-          subtitle="Clarity snapshot sample"
-        />
-
+        <MetricKpiCard title="Sessions" value={f.totalSessions} icon={MousePointer} iconColor="blue" compareEnabled={false} subtitle="Recorded by Clarity" />
+        <MetricKpiCard title="Distinct Users" value={f.distinctUsers} icon={Users} iconColor="purple" compareEnabled={false} />
         <MetricKpiCard
           title="Dead Clicks"
-          value={summary?.deadClicks}
-          isInverse={true}
+          value={f.deadClickCount}
+          isInverse
           icon={AlertTriangle}
           iconColor="amber"
           compareEnabled={false}
-          subtitle={`${Number(summary?.deadClickRate || 0).toFixed(1)}% session rate`}
-          tooltip="Clicks on non-clickable page elements (buttons that don't respond, text clicked as links)."
+          subtitle={`${Number(f.deadClickRate || 0).toFixed(1)} per 100 sessions`}
+          tooltip="Clicks on elements that do nothing."
         />
-
         <MetricKpiCard
           title="Rage Clicks"
-          value={summary?.rageClicks}
-          isInverse={true}
+          value={f.rageClickCount}
+          isInverse
           icon={Flame}
           iconColor="rose"
           compareEnabled={false}
-          subtitle={`${Number(summary?.rageClickRate || 0).toFixed(1)}% session rate`}
-          tooltip="Rapid clicks in the same area indicating user frustration or slow responsiveness."
+          subtitle={`${Number(f.rageClickRate || 0).toFixed(1)} per 100 sessions`}
+          tooltip="Rapid repeated clicks in one spot, a sign of frustration."
         />
-
         <MetricKpiCard
           title="Quick Backs"
-          value={summary?.quickBacks}
-          isInverse={true}
+          value={f.quickbackClickCount}
+          isInverse
           icon={ArrowLeftRight}
           iconColor="amber"
           compareEnabled={false}
-          subtitle="Immediate return to previous page"
-          tooltip="User navigated to a page and quickly clicked Back, indicating bad intent match or slow load."
+          subtitle={`${Number(f.quickbackRate || 0).toFixed(1)} per 100 sessions`}
+          tooltip="Visitor opened a page and went straight back."
         />
-
         <MetricKpiCard
           title="Excessive Scroll"
-          value={summary?.excessiveScroll}
-          isInverse={true}
+          value={f.excessiveScrollCount}
+          isInverse
           icon={TrendingDown}
           iconColor="purple"
           compareEnabled={false}
-          subtitle="Users unable to find content"
-          tooltip="User scrolled up and down rapidly searching for expected information."
+          tooltip="Rapid up-and-down scrolling while searching for content."
         />
-
+        <MetricKpiCard title="Avg Scroll Depth" value={f.avgScrollDepth} format="percent" icon={Layers} iconColor="emerald" compareEnabled={false} />
+        <MetricKpiCard title="Avg Active Time" value={f.avgTimeOnPageSec} format="duration" icon={Clock} iconColor="blue" compareEnabled={false} />
         <MetricKpiCard
-          title="Average Scroll Depth"
-          value={summary?.scrollDepth}
-          format="percent"
-          icon={Layers}
-          iconColor="emerald"
-          compareEnabled={false}
-          subtitle="Content visibility reach"
-        />
-
-        <MetricKpiCard
-          title="Active Engagement Time"
-          value={summary?.activeTime}
-          format="duration"
-          icon={Calendar}
-          iconColor="blue"
-          compareEnabled={false}
-          subtitle="Average active user duration"
-        />
-
-        <MetricKpiCard
-          title="JavaScript Errors"
-          value={summary?.scriptErrors}
-          isInverse={true}
+          title="Script Errors"
+          value={f.scriptErrorCount}
+          isInverse
           icon={FileCode}
           iconColor="rose"
           compareEnabled={false}
-          subtitle="Client-side exceptions logged"
+          subtitle={`${Number(f.scriptErrorRate || 0).toFixed(1)} per 100 sessions`}
         />
       </div>
 
-      {/* Pages with Friction & Device Breakdown */}
+      {dailyTrend.length > 1 && (
+        <div className="card p-5 space-y-3">
+          <h3 className="text-sm font-semibold text-surface-900">Daily Sessions & Friction</h3>
+          <TrendLineChart
+            data={dailyTrend}
+            height={260}
+            series={[
+              { key: 'sessions', name: 'Sessions', stroke: '#2563eb', strokeWidth: 2.5 },
+              { key: 'deadClickCount', name: 'Dead clicks', stroke: '#f59e0b', strokeWidth: 2 },
+              { key: 'rageClickCount', name: 'Rage clicks', stroke: '#e11d48', strokeWidth: 2 },
+            ]}
+          />
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left: Device Breakdown */}
         <div className="card p-5 space-y-3">
           <h4 className="text-xs font-semibold text-surface-800 uppercase tracking-wider flex items-center gap-1.5">
             <Smartphone className="w-3.5 h-3.5 text-surface-400" />
-            <span>Friction by Device</span>
+            <span>Sessions by Device</span>
           </h4>
           <BarBreakdownChart
-            data={deviceBreakdown.map((d) => ({
-              name: d.device || 'Unknown',
-              value: (d.deadClicks || 0) + (d.rageClicks || 0),
-            }))}
+            data={deviceBreakdown.map((d) => ({ name: d.device || 'Unknown', value: d.sessions || 0 }))}
             dataKey="value"
             nameKey="name"
             height={260}
+            emptyMessage="Run a Clarity sync to see device data."
           />
         </div>
 
-        {/* Right: Pages Table */}
         <div className="lg:col-span-2">
           <DataTableWithFilter
             data={topPages}
+            emptyMessage="No page data yet. Run a Clarity sync with the URL preset for per-page friction."
             columns={[
               {
-                key: 'url',
+                key: 'page',
                 label: 'Page URL',
                 render: (val) => (
                   <span className="font-mono text-brand-700 truncate max-w-sm block" title={val}>
@@ -179,32 +157,13 @@ export default function ClarityDashboardView({
                   </span>
                 ),
               },
-              {
-                key: 'deadClicks',
-                label: 'Dead Clicks',
-                sortable: true,
-                render: (v) => <span className="font-semibold text-amber-600">{v || 0}</span>,
-              },
-              {
-                key: 'rageClicks',
-                label: 'Rage Clicks',
-                sortable: true,
-                render: (v) => <span className="font-semibold text-rose-600">{v || 0}</span>,
-              },
-              {
-                key: 'quickBacks',
-                label: 'Quick Backs',
-                sortable: true,
-                render: (v) => v || 0,
-              },
-              {
-                key: 'scrollDepth',
-                label: 'Avg Scroll %',
-                sortable: true,
-                render: (v) => (v ? `${Number(v).toFixed(1)}%` : '—'),
-              },
+              { key: 'sessions', label: 'Sessions', sortable: true, render: (v) => (v || 0).toLocaleString() },
+              { key: 'deadClicks', label: 'Dead Clicks', sortable: true, render: (v) => <span className="font-semibold text-amber-600">{v || 0}</span> },
+              { key: 'rageClicks', label: 'Rage Clicks', sortable: true, render: (v) => <span className="font-semibold text-rose-600">{v || 0}</span> },
+              { key: 'quickBacks', label: 'Quick Backs', sortable: true, render: (v) => v || 0 },
+              { key: 'avgScrollDepth', label: 'Avg Scroll', sortable: true, render: (v) => (v ? `${Number(v).toFixed(1)}%` : '—') },
             ]}
-            searchPlaceholder="Filter pages..."
+            searchPlaceholder="Filter pages…"
           />
         </div>
       </div>

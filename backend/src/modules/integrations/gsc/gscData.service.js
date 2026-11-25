@@ -5,20 +5,25 @@ import GoogleClientFactory from '../google/googleClient.factory.js';
 import prisma from '../../../config/database.js';
 import { NotFoundError, BadRequestError } from '../../../middleware/errorHandler.js';
 import logger from '../../../utils/logger.js';
+import { safeAuditLog } from '../../../utils/safeAuditLog.js';
+
+const PAGE_SIZE = 25000; // Search Analytics API maximum rowLimit
+const WRITE_BATCH_SIZE = 250;
 
 /**
- * Get date N days ago as YYYY-MM-DD.
+ * Get date N days ago as YYYY-MM-DD (UTC).
  */
 function getDaysAgoDate(days) {
   const d = new Date();
-  d.setDate(d.getDate() - days);
+  d.setUTCDate(d.getUTCDate() - days);
   return d.toISOString().split('T')[0];
 }
 
-// Search Analytics limits each response page. Continue while a full page is
-// returned so large properties do not silently lose most query/page rows.
+/**
+ * Pull every row for a Search Analytics request, following startRow pagination.
+ * dataState "all" includes fresh (not yet finalised) data so recent days are not missing.
+ */
 async function fetchSearchAnalyticsRows(client, siteUrl, requestBody, onRequest = () => {}) {
-  const pageSize = 25000;
   const rows = [];
   let startRow = 0;
 
@@ -26,15 +31,66 @@ async function fetchSearchAnalyticsRows(client, siteUrl, requestBody, onRequest 
     onRequest();
     const response = await client.searchanalytics.query({
       siteUrl,
-      requestBody: { ...requestBody, rowLimit: pageSize, startRow },
+      requestBody: {
+        type: 'web',
+        dataState: 'all',
+        ...requestBody,
+        rowLimit: PAGE_SIZE,
+        startRow,
+      },
     });
     const page = response.data.rows || [];
     rows.push(...page);
-    if (page.length < pageSize) break;
+    if (page.length < PAGE_SIZE) break;
     startRow += page.length;
   }
 
   return rows;
+}
+
+/**
+ * Run upserts in batched transactions instead of one round trip per row.
+ * Large properties return tens of thousands of query/page rows; sequential
+ * single upserts made syncs take so long they looked stuck in SYNCING.
+ */
+async function upsertInBatches(rows, buildUpsert) {
+  let written = 0;
+  for (let i = 0; i < rows.length; i += WRITE_BATCH_SIZE) {
+    const ops = rows.slice(i, i + WRITE_BATCH_SIZE).map(buildUpsert).filter(Boolean);
+    if (ops.length === 0) continue;
+    await prisma.$transaction(ops);
+    written += ops.length;
+  }
+  return written;
+}
+
+function metricValues(row) {
+  return {
+    clicks: Math.round(row.clicks || 0),
+    impressions: Math.round(row.impressions || 0),
+    ctr: parseFloat((row.ctr || 0).toFixed(4)),
+    avgPosition: parseFloat((row.position || 0).toFixed(2)),
+  };
+}
+
+/**
+ * Turn a googleapis error into a readable message and flag auth problems.
+ */
+function describeGoogleError(err) {
+  const status = err?.code || err?.response?.status || err?.status;
+  const apiMessage = err?.response?.data?.error?.message || err?.errors?.[0]?.message || err?.message;
+  const isAuth =
+    status === 401 ||
+    String(apiMessage || '').includes('invalid_grant') ||
+    String(apiMessage || '').includes('revoked');
+
+  if (status === 403) {
+    return {
+      isAuth: false,
+      message: `Google account does not have access to this Search Console property (HTTP 403): ${apiMessage}`,
+    };
+  }
+  return { isAuth, message: apiMessage || 'Unknown Google Search Console error' };
 }
 
 export class GSCDataService {
@@ -42,9 +98,13 @@ export class GSCDataService {
    * Import Google Search Console data for a website across a date range.
    */
   async importGSCData({ workspaceId, websiteId, startDate, endDate, user }) {
-    // GSC data typically has a 2-3 day latency window
+    // GSC data typically has a 2-3 day latency window for final data
     const start = startDate || getDaysAgoDate(30);
-    const end = endDate || getDaysAgoDate(3);
+    const end = endDate || getDaysAgoDate(1);
+
+    if (start > end) {
+      throw new BadRequestError(`Invalid GSC date range: ${start} is after ${end}.`);
+    }
 
     // 1. Fetch connection details
     const connection = await prisma.integrationConnection.findFirst({
@@ -81,225 +141,93 @@ export class GSCDataService {
     let rowsFetched = 0;
     let rowsInserted = 0;
     let apiCallsUsed = 0;
+    const countCall = () => { apiCallsUsed++; };
 
     try {
       const gscClient = await GoogleClientFactory.getSearchConsoleClient(connection.googleAccount);
       const siteUrl = connection.selectedProperty;
+      const range = { startDate: start, endDate: end };
 
       // ─── 1. Daily Aggregates (Clicks, Impressions, CTR, Position) ─────────
-      const dailyRows = await fetchSearchAnalyticsRows(gscClient, siteUrl, {
-          startDate: start,
-          endDate: end,
-          dimensions: ['date'],
-      }, () => { apiCallsUsed++; });
+      const dailyRows = await fetchSearchAnalyticsRows(gscClient, siteUrl, { ...range, dimensions: ['date'] }, countCall);
       rowsFetched += dailyRows.length;
-
-      for (const row of dailyRows) {
+      rowsInserted += await upsertInBatches(dailyRows, (row) => {
         const date = row.keys[0];
-        const clicks = Math.round(row.clicks || 0);
-        const impressions = Math.round(row.impressions || 0);
-        const ctr = parseFloat((row.ctr || 0).toFixed(4));
-        const avgPosition = parseFloat((row.position || 0).toFixed(2));
-
-        await prisma.gSCDailyMetric.upsert({
-          where: {
-            websiteId_date: {
-              websiteId,
-              date,
-            },
-          },
-          update: {
-            clicks,
-            impressions,
-            ctr,
-            avgPosition,
-          },
-          create: {
-            websiteId,
-            date,
-            clicks,
-            impressions,
-            ctr,
-            avgPosition,
-          },
+        const values = metricValues(row);
+        return prisma.gSCDailyMetric.upsert({
+          where: { websiteId_date: { websiteId, date } },
+          update: values,
+          create: { websiteId, date, ...values },
         });
-        rowsInserted++;
-      }
+      });
 
-      // ─── 2. Top Queries (Keywords) ────────────────────────────────────────
-      const queryRows = await fetchSearchAnalyticsRows(gscClient, siteUrl, {
-          startDate: start,
-          endDate: end,
-          dimensions: ['date', 'query'],
-      }, () => { apiCallsUsed++; });
+      // ─── 2. Queries (Keywords) ────────────────────────────────────────────
+      const queryRows = await fetchSearchAnalyticsRows(gscClient, siteUrl, { ...range, dimensions: ['date', 'query'] }, countCall);
       rowsFetched += queryRows.length;
-
-      for (const row of queryRows) {
-        const [date, query] = row.keys;
-        const clicks = Math.round(row.clicks || 0);
-        const impressions = Math.round(row.impressions || 0);
-        const ctr = parseFloat((row.ctr || 0).toFixed(4));
-        const avgPosition = parseFloat((row.position || 0).toFixed(2));
-
-        await prisma.gSCQueryMetric.upsert({
+      rowsInserted += await upsertInBatches(queryRows, (row) => {
+        const [date, rawQuery] = row.keys;
+        const query = (rawQuery || '').substring(0, 500);
+        if (!query) return null;
+        const values = metricValues(row);
+        return prisma.gSCQueryMetric.upsert({
           where: {
-            websiteId_date_query_country_device: {
-              websiteId,
-              date,
-              query: (query || '').substring(0, 500),
-              country: '',
-              device: '',
-            },
+            websiteId_date_query_country_device: { websiteId, date, query, country: '', device: '' },
           },
-          update: {
-            clicks,
-            impressions,
-            ctr,
-            avgPosition,
-          },
-          create: {
-            websiteId,
-            date,
-            query: (query || '').substring(0, 500),
-            clicks,
-            impressions,
-            ctr,
-            avgPosition,
-            country: '',
-            device: '',
-          },
+          update: values,
+          create: { websiteId, date, query, country: '', device: '', ...values },
         });
-        rowsInserted++;
-      }
+      });
 
-      // ─── 3. Top Pages ─────────────────────────────────────────────────────
-      const pageRows = await fetchSearchAnalyticsRows(gscClient, siteUrl, {
-          startDate: start,
-          endDate: end,
-          dimensions: ['date', 'page'],
-      }, () => { apiCallsUsed++; });
+      // ─── 3. Pages ─────────────────────────────────────────────────────────
+      const pageRows = await fetchSearchAnalyticsRows(gscClient, siteUrl, { ...range, dimensions: ['date', 'page'] }, countCall);
       rowsFetched += pageRows.length;
-
-      for (const row of pageRows) {
-        const [date, page] = row.keys;
-        const clicks = Math.round(row.clicks || 0);
-        const impressions = Math.round(row.impressions || 0);
-        const ctr = parseFloat((row.ctr || 0).toFixed(4));
-        const avgPosition = parseFloat((row.position || 0).toFixed(2));
-
-        await prisma.gSCPageMetric.upsert({
+      rowsInserted += await upsertInBatches(pageRows, (row) => {
+        const [date, rawPage] = row.keys;
+        const page = (rawPage || '').substring(0, 500);
+        if (!page) return null;
+        const values = metricValues(row);
+        return prisma.gSCPageMetric.upsert({
           where: {
-            websiteId_date_page_country_device: {
-              websiteId,
-              date,
-              page: (page || '').substring(0, 500),
-              country: '',
-              device: '',
-            },
+            websiteId_date_page_country_device: { websiteId, date, page, country: '', device: '' },
           },
-          update: {
-            clicks,
-            impressions,
-            ctr,
-            avgPosition,
-          },
-          create: {
-            websiteId,
-            date,
-            page: (page || '').substring(0, 500),
-            clicks,
-            impressions,
-            ctr,
-            avgPosition,
-            country: '',
-            device: '',
-          },
+          update: values,
+          create: { websiteId, date, page, country: '', device: '', ...values },
         });
-        rowsInserted++;
-      }
+      });
 
       // ─── 4. Device Categories ─────────────────────────────────────────────
-      const deviceRows = await fetchSearchAnalyticsRows(gscClient, siteUrl, {
-          startDate: start,
-          endDate: end,
-          dimensions: ['date', 'device'],
-      }, () => { apiCallsUsed++; });
+      const deviceRows = await fetchSearchAnalyticsRows(gscClient, siteUrl, { ...range, dimensions: ['date', 'device'] }, countCall);
       rowsFetched += deviceRows.length;
-
-      for (const row of deviceRows) {
-        const [date, device] = row.keys;
-        const clicks = Math.round(row.clicks || 0);
-        const impressions = Math.round(row.impressions || 0);
-        const ctr = parseFloat((row.ctr || 0).toFixed(4));
-        const avgPosition = parseFloat((row.position || 0).toFixed(2));
-
-        await prisma.gSCDeviceMetric.upsert({
-          where: {
-            websiteId_date_device: {
-              websiteId,
-              date,
-              device: device.toLowerCase(),
-            },
-          },
-          update: {
-            clicks,
-            impressions,
-            ctr,
-            avgPosition,
-          },
-          create: {
-            websiteId,
-            date,
-            device: device.toLowerCase(),
-            clicks,
-            impressions,
-            ctr,
-            avgPosition,
-          },
+      rowsInserted += await upsertInBatches(deviceRows, (row) => {
+        const [date, rawDevice] = row.keys;
+        const device = String(rawDevice || 'unknown').toLowerCase();
+        const values = metricValues(row);
+        return prisma.gSCDeviceMetric.upsert({
+          where: { websiteId_date_device: { websiteId, date, device } },
+          update: values,
+          create: { websiteId, date, device, ...values },
         });
-        rowsInserted++;
-      }
+      });
 
       // ─── 5. Countries ─────────────────────────────────────────────────────
-      const countryRows = await fetchSearchAnalyticsRows(gscClient, siteUrl, {
-          startDate: start,
-          endDate: end,
-          dimensions: ['date', 'country'],
-      }, () => { apiCallsUsed++; });
+      const countryRows = await fetchSearchAnalyticsRows(gscClient, siteUrl, { ...range, dimensions: ['date', 'country'] }, countCall);
       rowsFetched += countryRows.length;
-
-      for (const row of countryRows) {
-        const [date, country] = row.keys;
-        const clicks = Math.round(row.clicks || 0);
-        const impressions = Math.round(row.impressions || 0);
-        const ctr = parseFloat((row.ctr || 0).toFixed(4));
-        const avgPosition = parseFloat((row.position || 0).toFixed(2));
-
-        await prisma.gSCCountryMetric.upsert({
-          where: {
-            websiteId_date_country: {
-              websiteId,
-              date,
-              country,
-            },
-          },
-          update: {
-            clicks,
-            impressions,
-            ctr,
-            avgPosition,
-          },
-          create: {
-            websiteId,
-            date,
-            country,
-            clicks,
-            impressions,
-            ctr,
-            avgPosition,
-          },
+      rowsInserted += await upsertInBatches(countryRows, (row) => {
+        const [date, rawCountry] = row.keys;
+        const country = String(rawCountry || 'zzz').substring(0, 100);
+        const values = metricValues(row);
+        return prisma.gSCCountryMetric.upsert({
+          where: { websiteId_date_country: { websiteId, date, country } },
+          update: values,
+          create: { websiteId, date, country, ...values },
         });
-        rowsInserted++;
+      });
+
+      if (dailyRows.length === 0) {
+        logger.warn(
+          `GSC returned no rows for ${siteUrl} between ${start} and ${end}. ` +
+            'Check that the selected property matches the website (https:// vs sc-domain:) and has traffic.'
+        );
       }
 
       // ─── Finalize Connection Status & Sync History ────────────────────────
@@ -330,21 +258,13 @@ export class GSCDataService {
         },
       });
 
-      // Audit Log
-      await prisma.auditLog.create({
-        data: {
-          workspaceId,
-          userId: user.id,
-          action: 'integration.gsc_data_imported',
-          entityType: 'Website',
-          entityId: websiteId,
-          metadata: {
-            startDate: start,
-            endDate: end,
-            rowsFetched,
-            rowsInserted,
-          },
-        },
+      await safeAuditLog({
+        workspaceId,
+        userId: user?.id || null,
+        action: 'integration.gsc_data_imported',
+        entityType: 'Website',
+        entityId: websiteId,
+        metadata: { startDate: start, endDate: end, rowsFetched, rowsInserted },
       });
 
       logger.info(
@@ -361,16 +281,20 @@ export class GSCDataService {
         durationMs: Date.now() - startTime,
       };
     } catch (importErr) {
-      logger.error(`GSC import failed for website ${websiteId}: ${importErr.message}`);
+      const { isAuth, message } = describeGoogleError(importErr);
+      logger.error(`GSC import failed for website ${websiteId}: ${message}`);
 
+      // Keep the property binding "CONNECTED" on transient failures so dashboards,
+      // schedulers and the AI assistant still treat GSC as connected. Only auth
+      // failures need the user to act.
       await prisma.integrationConnection.update({
         where: { id: connection.id },
         data: {
-          status: 'FAILED',
+          status: isAuth ? 'EXPIRED' : 'CONNECTED',
           lastSyncStatus: 'FAILED',
-          lastError: importErr.message,
+          lastError: message,
         },
-      });
+      }).catch(() => {});
 
       await prisma.syncHistory.create({
         data: {
@@ -383,13 +307,13 @@ export class GSCDataService {
           rowsFetched,
           rowsInserted,
           apiCallsUsed,
-          errorMessage: importErr.message,
+          errorMessage: message,
           dateRangeStart: start,
           dateRangeEnd: end,
         },
-      });
+      }).catch(() => {});
 
-      throw new BadRequestError(`GSC data import failed: ${importErr.message}`);
+      throw new BadRequestError(`GSC data import failed: ${message}`);
     }
   }
 }

@@ -321,7 +321,7 @@ export default function SyncManagementView({ workspaceId, websiteId }) {
                   let badgeClass = 'badge-gray';
                   if (job.status === 'COMPLETED') badgeClass = 'badge-success';
                   if (job.status === 'FAILED') badgeClass = 'badge-danger';
-                  if (job.status === 'RUNNING' || job.status === 'QUEUED') badgeClass = 'badge-info';
+                  if (['PENDING', 'PROCESSING', 'RUNNING', 'QUEUED'].includes(job.status)) badgeClass = 'badge-info';
 
                   return (
                     <tr key={job.id} className="hover:bg-surface-50/50">
@@ -360,7 +360,7 @@ export default function SyncManagementView({ workspaceId, websiteId }) {
                             <span>Retry</span>
                           </button>
                         )}
-                        {(job.status === 'RUNNING' || job.status === 'QUEUED') && (
+                        {['PENDING', 'PROCESSING', 'RUNNING', 'QUEUED'].includes(job.status) && (
                           <button
                             onClick={() => handleCancelJob(job.id)}
                             disabled={isCancelling}

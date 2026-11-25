@@ -44,7 +44,7 @@ async function processSyncJob(job) {
     await prisma.syncJob.update({
       where: { id: syncJobId },
       data: {
-        status: 'RUNNING',
+        status: 'PROCESSING',
         startedAt: new Date(),
         attempts: job.attemptsMade + 1,
       },

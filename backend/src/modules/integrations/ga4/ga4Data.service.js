@@ -5,6 +5,7 @@ import GoogleClientFactory from '../google/googleClient.factory.js';
 import prisma from '../../../config/database.js';
 import { NotFoundError, BadRequestError } from '../../../middleware/errorHandler.js';
 import logger from '../../../utils/logger.js';
+import { safeAuditLog } from '../../../utils/safeAuditLog.js';
 
 /**
  * Convert GA4 date format (YYYYMMDD) to ISO format (YYYY-MM-DD).
@@ -376,19 +377,17 @@ export class GA4DataService {
       });
 
       // Audit Log
-      await prisma.auditLog.create({
-        data: {
-          workspaceId,
-          userId: user.id,
-          action: 'integration.ga4_data_imported',
-          entityType: 'Website',
-          entityId: websiteId,
-          metadata: {
-            startDate: start,
-            endDate: end,
-            rowsFetched,
-            rowsInserted,
-          },
+      await safeAuditLog({
+        workspaceId,
+        userId: user?.id || null,
+        action: 'integration.ga4_data_imported',
+        entityType: 'Website',
+        entityId: websiteId,
+        metadata: {
+          startDate: start,
+          endDate: end,
+          rowsFetched,
+          rowsInserted,
         },
       });
 

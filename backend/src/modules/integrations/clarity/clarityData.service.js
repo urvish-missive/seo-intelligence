@@ -82,19 +82,34 @@ export class ClarityDataService {
       avgTimeOnPageSec: parseFloat((frictionTotals.timeOnPageSum / count).toFixed(1)),
     };
 
-    // 2. Fetch device breakdown
-    const deviceMetrics = await prisma.clarityDeviceMetric.findMany({
+    // 2. Fetch device breakdown (latest import date only, so pages/devices are not
+    //    repeated once per import day)
+    const latestDevice = await prisma.clarityDeviceMetric.findFirst({
       where: { websiteId },
-      orderBy: { sessions: 'desc' },
-      take: 10,
+      orderBy: { date: 'desc' },
+      select: { date: true },
     });
+    const deviceMetrics = latestDevice
+      ? await prisma.clarityDeviceMetric.findMany({
+          where: { websiteId, date: latestDevice.date },
+          orderBy: { sessions: 'desc' },
+          take: 10,
+        })
+      : [];
 
     // 3. Fetch top pages
-    const pageMetrics = await prisma.clarityPageMetric.findMany({
+    const latestPage = await prisma.clarityPageMetric.findFirst({
       where: { websiteId },
-      orderBy: { sessions: 'desc' },
-      take: 20,
+      orderBy: { date: 'desc' },
+      select: { date: true },
     });
+    const pageMetrics = latestPage
+      ? await prisma.clarityPageMetric.findMany({
+          where: { websiteId, date: latestPage.date },
+          orderBy: { sessions: 'desc' },
+          take: 20,
+        })
+      : [];
 
     // 4. Fetch latest snapshots count
     const snapshotsCount = await prisma.clarityImportSnapshot.count({

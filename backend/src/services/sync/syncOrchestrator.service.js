@@ -9,7 +9,7 @@ import { isRedisAvailable } from '../../config/redis.js';
 import { ga4DataService } from '../../modules/integrations/ga4/ga4Data.service.js';
 import { gscDataService } from '../../modules/integrations/gsc/gscData.service.js';
 import { clarityImportService } from '../../modules/integrations/clarity/clarityImport.service.js';
-import { clarityConnectionService } from '../../modules/integrations/clarity/clarityConnection.service.js';
+import { getEffectiveCallsToday } from '../../modules/integrations/clarity/clarityConnection.service.js';
 import { NotFoundError, BadRequestError, AppError } from '../../middleware/errorHandler.js';
 import logger from '../../utils/logger.js';
 
@@ -91,7 +91,7 @@ export class SyncOrchestratorService {
       if (!clarityConn) {
         throw new BadRequestError('Clarity project connection details are missing.');
       }
-      if (clarityConn.apiCallsToday >= 10) {
+      if (getEffectiveCallsToday(clarityConn) >= 10) {
         throw new AppError(
           'Microsoft Clarity daily export quota reached (10 requests per project per day). Please wait until the next UTC day.',
           429
@@ -131,13 +131,16 @@ export class SyncOrchestratorService {
     if (isRedisAvailable()) {
       try {
         const queuedJob = await addSyncJob(payload, {
-          jobId: `sync:${websiteId}:${prov}:${syncJob.id}`,
+          // BullMQ custom job ids must not contain ':'
+          jobId: `sync-${websiteId}-${prov}-${syncJob.id}`,
         });
 
+        // Status stays PENDING (valid SyncJobStatus) until the worker picks it up.
+        // A failure here must not fall through to the direct runner: the job is already queued.
         await prisma.syncJob.update({
           where: { id: syncJob.id },
-          data: { bullmqJobId: queuedJob.id, status: 'QUEUED' },
-        });
+          data: { bullmqJobId: String(queuedJob.id) },
+        }).catch((e) => logger.warn(`Could not store BullMQ job id: ${e.message}`));
 
         return {
           jobId: syncJob.id,
@@ -176,7 +179,7 @@ export class SyncOrchestratorService {
 
       await prisma.syncJob.update({
         where: { id: syncJobId },
-        data: { status: 'RUNNING', startedAt: new Date() },
+        data: { status: 'PROCESSING', startedAt: new Date() },
       }).catch(() => {});
 
       try {
@@ -256,7 +259,7 @@ export class SyncOrchestratorService {
               select: { email: true, status: true },
             },
             clarityConnection: {
-              select: { projectId: true, projectName: true, apiCallsToday: true, status: true },
+              select: { projectId: true, projectName: true, apiCallsToday: true, apiCallsResetAt: true, status: true },
             },
           },
         },
@@ -286,7 +289,7 @@ export class SyncOrchestratorService {
 
       return {
         provider: p,
-        isConnected: conn?.status === 'CONNECTED',
+        isConnected: ['CONNECTED', 'SYNCING'].includes(conn?.status),
         connectionStatus: conn?.status || 'NOT_CONNECTED',
         selectedProperty: conn?.selectedProperty || null,
         selectedPropertyName: conn?.selectedPropertyName || null,
@@ -309,8 +312,8 @@ export class SyncOrchestratorService {
             },
         clarityQuota: p === 'CLARITY' && conn?.clarityConnection
           ? {
-              callsToday: conn.clarityConnection.apiCallsToday,
-              callsRemaining: Math.max(0, 10 - conn.clarityConnection.apiCallsToday),
+              callsToday: getEffectiveCallsToday(conn.clarityConnection),
+              callsRemaining: Math.max(0, 10 - getEffectiveCallsToday(conn.clarityConnection)),
               limit: 10,
             }
           : null,
@@ -365,7 +368,7 @@ export class SyncOrchestratorService {
       throw new NotFoundError('Sync job not found.');
     }
 
-    if (job.status === 'RUNNING' || job.status === 'QUEUED') {
+    if (job.status === 'PROCESSING') {
       throw new BadRequestError('Cannot retry a job that is currently queued or in-flight.');
     }
 

@@ -22,6 +22,20 @@ function getStartOfUtcDay() {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 }
 
+/**
+ * Calls used today, treating a counter last reset before today (UTC) as 0.
+ * The stored counter is only reset on the next call, so every reader must use this.
+ */
+export function getEffectiveCallsToday(connection) {
+  if (!connection) return 0;
+  if (!connection.apiCallsResetAt || new Date(connection.apiCallsResetAt) < getStartOfUtcDay()) {
+    return 0;
+  }
+  return connection.apiCallsToday || 0;
+}
+
+export const CLARITY_DAILY_QUOTA_LIMIT = DAILY_QUOTA_LIMIT;
+
 export class ClarityConnectionService {
   /**
    * Validate token against Microsoft Clarity API, encrypt credentials, and save connection in workspace.
@@ -52,6 +66,13 @@ export class ClarityConnectionService {
     // 3. Encrypt API token at rest using AES-256-GCM
     const apiTokenEnc = encrypt(apiToken.trim());
 
+    // The validation call counts against the daily quota; respect UTC day rollover
+    const existing = await prisma.clarityConnection.findUnique({
+      where: { workspaceId_projectId: { workspaceId, projectId: projectId.trim() } },
+      select: { apiCallsToday: true, apiCallsResetAt: true },
+    });
+    const callsAfterValidation = getEffectiveCallsToday(existing) + 1;
+
     // 4. Upsert connection in database
     const connection = await prisma.clarityConnection.upsert({
       where: {
@@ -66,7 +87,7 @@ export class ClarityConnectionService {
         status: 'CONNECTED',
         lastValidatedAt: new Date(),
         lastError: null,
-        apiCallsToday: { increment: 1 },
+        apiCallsToday: callsAfterValidation,
         apiCallsResetAt: getStartOfUtcDay(),
       },
       create: {
@@ -130,6 +151,7 @@ export class ClarityConnectionService {
         lastSyncAt: true,
         lastError: true,
         apiCallsToday: true,
+        apiCallsResetAt: true,
         createdAt: true,
         updatedAt: true,
         _count: {
@@ -144,6 +166,7 @@ export class ClarityConnectionService {
 
     return connections.map((conn) => ({
       ...conn,
+      apiCallsToday: getEffectiveCallsToday(conn),
       connectedWebsitesCount: conn._count.integrations,
       snapshotsCount: conn._count.snapshots,
       _count: undefined,
@@ -183,7 +206,7 @@ export class ClarityConnectionService {
       lastValidatedAt: connection.lastValidatedAt,
       lastSyncAt: connection.lastSyncAt,
       lastError: connection.lastError,
-      apiCallsToday: connection.apiCallsToday,
+      apiCallsToday: getEffectiveCallsToday(connection),
       createdAt: connection.createdAt,
       updatedAt: connection.updatedAt,
       mappedWebsites: connection.integrations.map((i) => i.website),

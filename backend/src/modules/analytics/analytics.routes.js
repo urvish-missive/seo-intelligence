@@ -76,6 +76,13 @@ router.get(
   (req, res, next) => analyticsController.getGSCOpportunities(req, res, next)
 );
 
+// Report Summary (same data as the downloadable report, for on-screen viewing)
+router.get(
+  '/workspaces/:workspaceId/websites/:websiteId/analytics/report-summary',
+  requirePermission('websites.view'),
+  (req, res, next) => analyticsController.getReportSummary(req, res, next)
+);
+
 // Clarity Summary
 router.get(
   '/workspaces/:workspaceId/websites/:websiteId/analytics/clarity/summary',

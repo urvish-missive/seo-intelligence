@@ -4,111 +4,153 @@ import { User, Sparkles, Clock, Zap } from 'lucide-react';
 import EvidenceDrawer from './EvidenceDrawer.jsx';
 
 /**
- * Format markdown content into basic HTML elements safely.
+ * Format markdown content into React elements (no raw HTML, so it is XSS-safe).
+ * Supports #-###### headings, bullet and numbered lists, tables, **bold**,
+ * *italic* and `code`, which is what the local model produces.
  */
+function formatInline(text, keyPrefix = '') {
+  const parts = String(text).split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*\s][^*]*\*)/g);
+  return parts.map((part, i) => {
+    const key = `${keyPrefix}${i}`;
+    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
+      return <strong key={key} className="font-semibold text-surface-900">{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+      return <code key={key} className="px-1 py-0.5 rounded bg-surface-100 text-[0.85em] font-mono">{part.slice(1, -1)}</code>;
+    }
+    if (part.startsWith('*') && part.endsWith('*') && part.length > 2) {
+      return <em key={key}>{part.slice(1, -1)}</em>;
+    }
+    return part;
+  });
+}
+
+const HEADING_CLASSES = {
+  1: 'text-lg font-bold text-surface-900 mt-6 mb-3 tracking-tight',
+  2: 'text-base font-bold text-surface-900 mt-5 mb-2.5 tracking-tight border-b border-surface-100 pb-1',
+  3: 'text-sm font-bold text-surface-900 mt-4 mb-2 tracking-tight',
+  4: 'text-sm font-semibold text-surface-900 mt-3 mb-1.5',
+};
+
+const isTableRow = (t) => t.startsWith('|') && t.endsWith('|') && t.length > 2;
+const isTableDivider = (t) => /^\|?[\s:|-]+\|?$/.test(t) && t.includes('-');
+const splitRow = (t) => t.slice(1, -1).split('|').map((c) => c.trim());
+
 function renderMarkdown(content) {
   if (!content) return null;
 
   const lines = content.split('\n');
   const elements = [];
-  let inList = false;
   let listItems = [];
+  let listType = null; // 'ul' | 'ol'
+  let tableRows = [];
 
   const flushList = () => {
-    if (inList && listItems.length > 0) {
-      elements.push(
-        <ul key={`ul-${elements.length}`} className="list-disc pl-5 my-2 space-y-1">
-          {listItems.map((item, idx) => (
-            <li key={idx} className="text-surface-800 leading-relaxed">
-              {formatInline(item)}
-            </li>
-          ))}
-        </ul>
-      );
-      listItems = [];
-      inList = false;
-    }
+    if (listItems.length === 0) return;
+    const key = `list-${elements.length}`;
+    const items = listItems.map((item, idx) => (
+      <li key={idx} className="text-surface-800 leading-relaxed">{formatInline(item, `${key}-${idx}-`)}</li>
+    ));
+    elements.push(
+      listType === 'ol' ? (
+        <ol key={key} className="list-decimal pl-5 my-2 space-y-1 marker:text-brand-600 marker:font-semibold">{items}</ol>
+      ) : (
+        <ul key={key} className="list-disc pl-5 my-2 space-y-1">{items}</ul>
+      )
+    );
+    listItems = [];
+    listType = null;
   };
 
-  const formatInline = (text) => {
-    // Replace **bold**
-    const parts = text.split(/(\*\*.*?\*\*)/g);
-    return parts.map((part, i) => {
-      if (part.startsWith('**') && part.endsWith('**')) {
-        return <strong key={i} className="font-semibold text-surface-900">{part.slice(2, -2)}</strong>;
-      }
-      return part;
-    });
+  const flushTable = () => {
+    if (tableRows.length === 0) return;
+    const [header, ...body] = tableRows;
+    const key = `table-${elements.length}`;
+    elements.push(
+      <div key={key} className="my-3 overflow-x-auto">
+        <table className="w-full text-xs border border-surface-200 rounded-lg">
+          <thead className="bg-surface-50">
+            <tr>
+              {header.map((h, i) => (
+                <th key={i} className="px-2.5 py-1.5 text-left font-semibold text-surface-700 border-b border-surface-200">{formatInline(h, `${key}-h${i}-`)}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-surface-100">
+            {body.map((row, r) => (
+              <tr key={r}>
+                {row.map((c, i) => (
+                  <td key={i} className="px-2.5 py-1.5 text-surface-800">{formatInline(c, `${key}-${r}-${i}-`)}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+    tableRows = [];
   };
 
   lines.forEach((line, index) => {
     const trimmed = line.trim();
 
-    // Headers
-    if (trimmed.startsWith('### ')) {
+    // Tables
+    if (isTableRow(trimmed)) {
       flushList();
-      elements.push(
-        <h4 key={index} className="text-sm font-bold text-surface-900 mt-4 mb-2 tracking-tight">
-          {formatInline(trimmed.slice(4))}
-        </h4>
-      );
+      if (!isTableDivider(trimmed)) tableRows.push(splitRow(trimmed));
       return;
     }
-    if (trimmed.startsWith('## ')) {
+    flushTable();
+
+    // Headings (# to ######)
+    const heading = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
       flushList();
+      const level = Math.min(heading[1].length, 4);
+      const Tag = `h${Math.min(level + 1, 6)}`;
       elements.push(
-        <h3 key={index} className="text-base font-bold text-surface-900 mt-5 mb-2.5 tracking-tight border-b border-surface-100 pb-1">
-          {formatInline(trimmed.slice(3))}
-        </h3>
-      );
-      return;
-    }
-    if (trimmed.startsWith('# ')) {
-      flushList();
-      elements.push(
-        <h2 key={index} className="text-lg font-bold text-surface-900 mt-6 mb-3 tracking-tight">
-          {formatInline(trimmed.slice(2))}
-        </h2>
+        <Tag key={index} className={HEADING_CLASSES[level]}>{formatInline(heading[2], `h${index}-`)}</Tag>
       );
       return;
     }
 
     // Bullet points
-    if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
-      inList = true;
-      listItems.push(trimmed.slice(2));
+    const bullet = trimmed.match(/^[-*•]\s+(.*)$/);
+    if (bullet) {
+      if (listType && listType !== 'ul') flushList();
+      listType = 'ul';
+      listItems.push(bullet[1]);
       return;
     }
 
     // Numbered list
-    const numMatch = trimmed.match(/^(\d+)\.\s+(.*)/);
-    if (numMatch) {
-      flushList();
-      elements.push(
-        <div key={index} className="flex items-start gap-2 my-1 text-surface-800 leading-relaxed">
-          <span className="font-semibold text-brand-600 min-w-5">{numMatch[1]}.</span>
-          <div>{formatInline(numMatch[2])}</div>
-        </div>
-      );
+    const numbered = trimmed.match(/^\d+[.)]\s+(.*)$/);
+    if (numbered) {
+      if (listType && listType !== 'ol') flushList();
+      listType = 'ol';
+      listItems.push(numbered[1]);
       return;
     }
 
-    // Empty line
     if (!trimmed) {
       flushList();
       return;
     }
 
-    // Standard paragraph
+    if (/^(-{3,}|\*{3,})$/.test(trimmed)) {
+      flushList();
+      elements.push(<hr key={index} className="my-3 border-surface-200" />);
+      return;
+    }
+
     flushList();
     elements.push(
-      <p key={index} className="my-2 text-surface-800 leading-relaxed text-sm">
-        {formatInline(trimmed)}
-      </p>
+      <p key={index} className="my-2 text-surface-800 leading-relaxed text-sm">{formatInline(trimmed, `p${index}-`)}</p>
     );
   });
 
   flushList();
+  flushTable();
   return elements;
 }
 

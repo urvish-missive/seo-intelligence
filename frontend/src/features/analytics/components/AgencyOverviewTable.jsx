@@ -13,13 +13,36 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import { useGetAgencyOverviewQuery } from '../analyticsApi.js';
+import DateRangeSelector, { getInitialDateRange } from './DateRangeSelector.jsx';
+
+/** Small +x% / -x% badge; nothing when there is no comparison value. */
+function ChangeBadge({ value }) {
+  if (value === null || value === undefined || isNaN(value)) return null;
+  const up = value > 0;
+  const flat = value === 0;
+  return (
+    <span
+      className={`ml-1.5 text-2xs font-semibold ${
+        flat ? 'text-surface-400' : up ? 'text-emerald-600' : 'text-rose-600'
+      }`}
+    >
+      {up ? '+' : ''}
+      {Number(value).toFixed(1)}%
+    </span>
+  );
+}
+
+const pctChange = (cur, prev) => (prev > 0 ? ((cur - prev) / prev) * 100 : cur > 0 ? 100 : 0);
 
 export default function AgencyOverviewTable({ workspaceId, filterClientId }) {
   const [search, setSearch] = useState('');
+  const [dateRange, setDateRange] = useState(() => getInitialDateRange());
 
-  const { data: agencyData, isLoading } = useGetAgencyOverviewQuery(workspaceId, {
-    skip: !workspaceId,
-  });
+  const { data: agencyData, isLoading, isFetching } = useGetAgencyOverviewQuery(
+    { workspaceId, startDate: dateRange.startDate, endDate: dateRange.endDate },
+    { skip: !workspaceId || !dateRange.startDate }
+  );
+  const showChange = dateRange.compare;
 
   const websites = agencyData?.data?.websites || [];
 
@@ -45,17 +68,26 @@ export default function AgencyOverviewTable({ workspaceId, filterClientId }) {
   const totalImpressions = filtered.reduce((acc, w) => acc + (w.metrics?.gscImpressions || 0), 0);
   const totalSessions = filtered.reduce((acc, w) => acc + (w.metrics?.ga4Sessions || 0), 0);
   const totalOrganic = filtered.reduce((acc, w) => acc + (w.metrics?.ga4OrganicSessions || 0), 0);
+  const prevTotal = (key) => filtered.reduce((acc, w) => acc + (w.previous?.[key] || 0), 0);
+  const totalChanges = {
+    clicks: pctChange(totalClicks, prevTotal('clicks')),
+    impressions: pctChange(totalImpressions, prevTotal('impressions')),
+    sessions: pctChange(totalSessions, prevTotal('sessions')),
+    organicSessions: pctChange(totalOrganic, prevTotal('organicSessions')),
+  };
 
   return (
-    <div className="space-y-4">
+    <div className={`space-y-4 ${isFetching ? 'opacity-70 transition-opacity' : ''}`}>
+      <DateRangeSelector value={dateRange} onChange={setDateRange} />
+
       {/* Agency Aggregates Scorecards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="card p-4">
           <div className="text-2xs font-semibold text-surface-400 uppercase tracking-wider">
-            Total Search Clicks (28d)
+            Total Search Clicks
           </div>
           <div className="text-2xl font-bold text-surface-900 mt-1 flex items-center justify-between">
-            <span>{isLoading ? '…' : totalClicks.toLocaleString()}</span>
+            <span>{isLoading ? '…' : totalClicks.toLocaleString()}{showChange && <ChangeBadge value={totalChanges.clicks} />}</span>
             <MousePointerClick className="w-5 h-5 text-blue-500" />
           </div>
           <div className="text-2xs text-surface-500 mt-1">Across all filtered websites</div>
@@ -63,10 +95,10 @@ export default function AgencyOverviewTable({ workspaceId, filterClientId }) {
 
         <div className="card p-4">
           <div className="text-2xs font-semibold text-surface-400 uppercase tracking-wider">
-            Total Impressions (28d)
+            Total Impressions
           </div>
           <div className="text-2xl font-bold text-surface-900 mt-1 flex items-center justify-between">
-            <span>{isLoading ? '…' : totalImpressions.toLocaleString()}</span>
+            <span>{isLoading ? '…' : totalImpressions.toLocaleString()}{showChange && <ChangeBadge value={totalChanges.impressions} />}</span>
             <Eye className="w-5 h-5 text-purple-500" />
           </div>
           <div className="text-2xs text-surface-500 mt-1">Search visibility reach</div>
@@ -74,10 +106,10 @@ export default function AgencyOverviewTable({ workspaceId, filterClientId }) {
 
         <div className="card p-4">
           <div className="text-2xs font-semibold text-surface-400 uppercase tracking-wider">
-            Total Sessions (28d)
+            Total Sessions
           </div>
           <div className="text-2xl font-bold text-surface-900 mt-1 flex items-center justify-between">
-            <span>{isLoading ? '…' : totalSessions.toLocaleString()}</span>
+            <span>{isLoading ? '…' : totalSessions.toLocaleString()}{showChange && <ChangeBadge value={totalChanges.sessions} />}</span>
             <Activity className="w-5 h-5 text-emerald-500" />
           </div>
           <div className="text-2xs text-surface-500 mt-1">Google Analytics 4 traffic</div>
@@ -85,10 +117,10 @@ export default function AgencyOverviewTable({ workspaceId, filterClientId }) {
 
         <div className="card p-4">
           <div className="text-2xs font-semibold text-surface-400 uppercase tracking-wider">
-            Organic Traffic (28d)
+            Organic Traffic
           </div>
           <div className="text-2xl font-bold text-surface-900 mt-1 flex items-center justify-between">
-            <span>{isLoading ? '…' : totalOrganic.toLocaleString()}</span>
+            <span>{isLoading ? '…' : totalOrganic.toLocaleString()}{showChange && <ChangeBadge value={totalChanges.organicSessions} />}</span>
             <Globe className="w-5 h-5 text-brand-500" />
           </div>
           <div className="text-2xs text-surface-500 mt-1">Visits from search engines</div>
@@ -126,7 +158,7 @@ export default function AgencyOverviewTable({ workspaceId, filterClientId }) {
             <thead className="bg-surface-50 text-surface-500 border-b border-surface-200 uppercase text-2xs font-semibold tracking-wider">
               <tr>
                 <th className="px-4 py-3">Website & Client</th>
-                <th className="px-4 py-3 text-right">GSC Clicks (28d)</th>
+                <th className="px-4 py-3 text-right">GSC Clicks</th>
                 <th className="px-4 py-3 text-right">GSC Impressions</th>
                 <th className="px-4 py-3 text-right">Avg CTR</th>
                 <th className="px-4 py-3 text-right">GA4 Sessions</th>
@@ -171,7 +203,7 @@ export default function AgencyOverviewTable({ workspaceId, filterClientId }) {
 
                       {/* GSC Clicks */}
                       <td className="px-4 py-3 text-right font-semibold text-surface-900">
-                        {m.gscClicks ? m.gscClicks.toLocaleString() : '—'}
+                        {m.gscClicks ? m.gscClicks.toLocaleString() : '—'}{showChange && <ChangeBadge value={w.changes?.clicks} />}
                       </td>
 
                       {/* GSC Impressions */}
@@ -186,7 +218,7 @@ export default function AgencyOverviewTable({ workspaceId, filterClientId }) {
 
                       {/* GA4 Sessions */}
                       <td className="px-4 py-3 text-right font-semibold text-surface-900">
-                        {m.ga4Sessions ? m.ga4Sessions.toLocaleString() : '—'}
+                        {m.ga4Sessions ? m.ga4Sessions.toLocaleString() : '—'}{showChange && <ChangeBadge value={w.changes?.sessions} />}
                       </td>
 
                       {/* GA4 Organic */}

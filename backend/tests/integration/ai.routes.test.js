@@ -114,7 +114,27 @@ describe('AI Assistant Controller & Service Integration Tests', () => {
       expect(res.data.data.modelName).toBe('qwen2.5:7b');
     });
 
+    it('should refuse a model that is not installed in Ollama', async () => {
+      jest.spyOn(prisma.aIModelConfiguration, 'findUnique').mockResolvedValue(null);
+      jest.spyOn(ollamaService, 'listModels').mockResolvedValue([{ name: 'qwen2.5:3b' }, { name: 'qwen2.5:7b' }]);
+      const upsert = jest.spyOn(prisma.aIModelConfiguration, 'upsert');
+
+      const res = createMockResponse();
+      await aiChatController.updateConfig(
+        { params: { workspaceId: 'ws-test-ai' }, user: mockUser, body: { modelName: 'qwen2.5:14b' } },
+        res,
+        () => {}
+      );
+
+      expect(res.statusCode).toBe(400);
+      expect(res.data.success).toBe(false);
+      expect(res.data.message).toContain('not installed');
+      expect(upsert).not.toHaveBeenCalled();
+    });
+
     it('should upsert workspace model configuration', async () => {
+      jest.spyOn(prisma.aIModelConfiguration, 'findUnique').mockResolvedValue(null);
+      jest.spyOn(ollamaService, 'listModels').mockResolvedValue([{ name: 'qwen2.5:14b' }]);
       jest.spyOn(prisma.aIModelConfiguration, 'upsert').mockResolvedValue({
         id: 'cfg-1',
         workspaceId: 'ws-test-ai',
