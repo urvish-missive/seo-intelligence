@@ -109,11 +109,15 @@ export default function MCPManagementPage() {
     {
       mcpServers: {
         missiveSEO: {
-          command: 'node',
-          args: ['c:/path/to/missive-seo-intelligence/mcp-server/src/server.js'],
+          command: 'npm',
+          args: [
+            '--prefix',
+            'C:/path/to/missive-seo-intelligence/backend',
+            'run',
+            'mcp:stdio',
+          ],
           env: {
             MCP_WORKSPACE_ID: workspaceId || 'your-workspace-id',
-            MCP_ACCESS_TOKEN: generatedToken || 'your-mcp-token-here',
           },
         },
       },
@@ -368,7 +372,7 @@ export default function MCPManagementPage() {
               </button>
             </div>
             <p className="text-xs text-surface-500 mb-2">
-              Add this block to your <code className="text-3xs bg-surface-200 px-1 py-0.5 rounded font-mono">claude_desktop_config.json</code>:
+              Replace the sample backend path with your project folder, then add this block to <code className="text-3xs bg-surface-200 px-1 py-0.5 rounded font-mono">claude_desktop_config.json</code>. The STDIO process reads database and encryption settings from <code>backend/.env</code>; no MCP token is needed for this local transport.
             </p>
             <pre className="p-3 bg-surface-900 text-surface-100 font-mono text-xs rounded overflow-x-auto">
               {claudeDesktopConfig}
@@ -381,7 +385,7 @@ export default function MCPManagementPage() {
               <span className="text-xs font-bold text-surface-900">B. Remote Streamable HTTP Transport (Production)</span>
             </div>
             <p className="text-xs text-surface-600 mb-2">
-              Remote MCP clients connect to the HTTP endpoint with an authorization header:
+              HTTP clients use the endpoint and bearer token below. Generate a token with the Streamable HTTP transport selected; keep the token private.
             </p>
             <div className="p-3 bg-surface-900 text-surface-100 font-mono text-xs rounded space-y-1">
               <p><span className="text-brand-300">POST</span> {typeof window !== 'undefined' ? `${window.location.origin}/api/v1/mcp` : '/api/v1/mcp'}</p>

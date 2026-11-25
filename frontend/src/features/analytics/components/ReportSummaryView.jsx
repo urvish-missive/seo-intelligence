@@ -222,11 +222,22 @@ export default function ReportSummaryView({ workspaceId, websiteId, dateRange })
               </div>
               <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
                 <dt className="text-surface-500">Sessions</dt><dd className="text-right tabular-nums">{fmtNum(cs.totalSessions)}</dd>
+                <dt className="text-surface-500">Unique users</dt><dd className="text-right tabular-nums">{fmtNum(cs.distinctUsers)}</dd>
+                <dt className="text-surface-500">Pages / session</dt><dd className="text-right tabular-nums">{cs.pagesPerSession ? Number(cs.pagesPerSession).toFixed(2) : '—'}</dd>
+                <dt className="text-surface-500">Active time</dt><dd className="text-right tabular-nums">{cs.avgTimeOnPageSec ? `${Math.round(cs.avgTimeOnPageSec)} sec` : '—'}</dd>
                 <dt className="text-surface-500">Rage clicks</dt><dd className="text-right tabular-nums">{fmtNum(cs.rageClickCount)}</dd>
                 <dt className="text-surface-500">Dead clicks</dt><dd className="text-right tabular-nums">{fmtNum(cs.deadClickCount)}</dd>
                 <dt className="text-surface-500">Quick backs</dt><dd className="text-right tabular-nums">{fmtNum(cs.quickbackClickCount)}</dd>
                 <dt className="text-surface-500">Scroll depth</dt><dd className="text-right tabular-nums">{fmtPct(cs.avgScrollDepth)}</dd>
               </dl>
+              {clarity.summary?.coverage && (
+                <p className="text-2xs text-surface-400 pt-1">
+                  Covers {new Date(clarity.summary.coverage.from).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                  {' – '}
+                  {new Date(clarity.summary.coverage.to).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                  {' '}(Clarity exports only the last 1–3 days).
+                </p>
+              )}
             </div>
           )}
         </div>

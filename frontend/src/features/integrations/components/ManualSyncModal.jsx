@@ -81,8 +81,11 @@ export default function ManualSyncModal({
           </div>
         </div>
 
-        {/* Date Inputs */}
+        {/* Custom Date Inputs */}
         <div className="grid grid-cols-2 gap-3">
+          <div className="col-span-2">
+            <label className="label">Custom date range</label>
+          </div>
           <div>
             <label className="label">Start Date</label>
             <input

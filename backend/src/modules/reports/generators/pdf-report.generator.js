@@ -143,11 +143,15 @@ export class PdfReportGenerator {
     doc.font('Helvetica').text(providers.join(', ') || 'No active providers', 160, metaY + 75);
 
     // Footer note on cover
+    const coverMargins = { ...doc.page.margins };
+    doc.page.margins = { ...coverMargins, bottom: 0 };
     doc.fontSize(9).fillColor('#94a3b8')
       .text(reportData.branding.footerText || 'Confidential Performance Audit', 40, doc.page.height - 60, {
         align: 'center',
         width: doc.page.width - 80,
+        lineBreak: false,
       });
+    doc.page.margins = coverMargins;
   }
 
   renderExecutiveSummary(doc, reportData, primaryColor, secondaryColor) {
@@ -169,12 +173,12 @@ export class PdfReportGenerator {
     const kpis = [
       {
         label: 'Organic Sessions',
-        value: formatNumber(reportData.metrics.ga4.summary?.sessions || 0),
+        value: reportData.metrics.ga4.available ? formatNumber(reportData.metrics.ga4.summary?.sessions || 0) : 'Not connected',
         change: reportData.metrics.ga4.comparison?.sessionsChangePercent,
       },
       {
         label: 'Active Users',
-        value: formatNumber(reportData.metrics.ga4.summary?.totalUsers || 0),
+        value: reportData.metrics.ga4.available ? formatNumber(reportData.metrics.ga4.summary?.totalUsers || 0) : 'Not connected',
         change: reportData.metrics.ga4.comparison?.usersChangePercent,
       },
       {
@@ -404,43 +408,61 @@ export class PdfReportGenerator {
   }
 
   renderClaritySection(doc, clarity, primaryColor) {
-    if (doc.y > doc.page.height - 200) {
+    if (doc.y > doc.page.height - 260) {
       doc.addPage();
     }
 
     this.renderSectionHeader(doc, 'Microsoft Clarity UX Behaviour Insights', primaryColor);
 
-    doc.fillColor('#64748b').fontSize(8.5).font('Helvetica')
-      .text('Aggregate visitor friction and interaction metrics identified across recorded user sessions:', { lineGap: 3 });
+    // Clarity only exports the last 1-3 days, so state exactly which window these numbers cover
+    const coverage = clarity.coverage;
+    const fmtWhen = (d) =>
+      new Date(d).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+    const coverageText = coverage
+      ? `Clarity data window: ${fmtWhen(coverage.from)} – ${fmtWhen(coverage.to)} UTC (${coverage.imports} import${coverage.imports === 1 ? '' : 's'}). Microsoft Clarity only exports the most recent 1–3 days, so this section reflects that window rather than the full reporting period.`
+      : 'No Clarity import covers this reporting period yet.';
+    doc.fillColor('#64748b').fontSize(8.5).font('Helvetica').text(coverageText, { lineGap: 3 });
     doc.moveDown(0.5);
 
-    const totalSessions = clarity.totalSessions ?? clarity.friction?.totalSessions ?? 0;
-    const distinctUsers = clarity.distinctUsers ?? clarity.friction?.distinctUsers ?? 0;
-    const avgScroll = clarity.avgScrollDepth ?? clarity.friction?.avgScrollDepth ?? 0;
-    const deadClicks = clarity.deadClicks ?? clarity.friction?.deadClickCount ?? 0;
-    const rageClicks = clarity.rageClicks ?? clarity.friction?.rageClickCount ?? 0;
-    const quickbacks = clarity.quickbacks ?? clarity.friction?.quickbackClickCount ?? 0;
+    const f = clarity.friction || {};
+    const totalSessions = clarity.totalSessions ?? f.totalSessions ?? 0;
+    const distinctUsers = clarity.distinctUsers ?? f.distinctUsers ?? 0;
+    const avgScroll = clarity.avgScrollDepth ?? f.avgScrollDepth ?? 0;
+    const deadClicks = clarity.deadClicks ?? f.deadClickCount ?? 0;
+    const rageClicks = clarity.rageClicks ?? f.rageClickCount ?? 0;
+    const quickbacks = clarity.quickbacks ?? f.quickbackClickCount ?? 0;
+    const pagesPerSession = clarity.pagesPerSession ?? f.pagesPerSession ?? 0;
+    const activeTime = clarity.avgTimeOnPageSec ?? f.avgTimeOnPageSec ?? 0;
+    const botSessions = clarity.botSessions ?? f.botSessions;
 
     const metrics = [
-      { label: 'Recorded Sessions', val: formatNumber(totalSessions) },
-      { label: 'Unique Visitors', val: formatNumber(distinctUsers) },
-      { label: 'Avg Scroll Depth', val: `${avgScroll}%` },
+      { label: 'Sessions', val: formatNumber(totalSessions), sub: botSessions ? `${formatNumber(botSessions)} bot sessions excluded` : '' },
+      { label: 'Unique Users', val: formatNumber(distinctUsers) },
+      { label: 'Pages per Session', val: Number(pagesPerSession).toFixed(2) },
+      { label: 'Scroll Depth', val: `${Number(avgScroll).toFixed(2)}%` },
+      { label: 'Active Time', val: `${Math.round(activeTime)} sec` },
       { label: 'Quick Backs', val: formatNumber(quickbacks) },
       { label: 'Rage Clicks', val: formatNumber(rageClicks) },
       { label: 'Dead Clicks', val: formatNumber(deadClicks) },
     ];
 
     let y = doc.y;
-    const boxW = 75;
+    const perRow = 4;
     const gap = 10;
+    const boxW = (doc.page.width - 80 - gap * (perRow - 1)) / perRow;
+    const boxH = 50;
     metrics.forEach((m, i) => {
-      const x = 40 + i * (boxW + gap);
-      doc.roundedRect(x, y, boxW, 44, 4).fill('#f8fafc').stroke('#e2e8f0');
-      doc.fillColor('#64748b').fontSize(7.5).font('Helvetica').text(m.label, x + 6, y + 7, { width: boxW - 12 });
-      doc.fillColor('#0f172a').fontSize(12).font('Helvetica-Bold').text(m.val, x + 6, y + 23, { width: boxW - 12 });
+      const x = 40 + (i % perRow) * (boxW + gap);
+      const by = y + Math.floor(i / perRow) * (boxH + gap);
+      doc.roundedRect(x, by, boxW, boxH, 4).fill('#f8fafc').stroke('#e2e8f0');
+      doc.fillColor('#64748b').fontSize(7.5).font('Helvetica').text(m.label, x + 8, by + 7, { width: boxW - 16, lineBreak: false });
+      doc.fillColor('#0f172a').fontSize(13).font('Helvetica-Bold').text(m.val, x + 8, by + 20, { width: boxW - 16, lineBreak: false });
+      if (m.sub) {
+        doc.fillColor('#94a3b8').fontSize(6.5).font('Helvetica').text(m.sub, x + 8, by + 38, { width: boxW - 16, lineBreak: false });
+      }
     });
 
-    y += 56;
+    y += Math.ceil(metrics.length / perRow) * (boxH + gap) + 6;
     doc.y = y;
 
     // Render Top Pages from Clarity if available
@@ -516,13 +538,18 @@ export class PdfReportGenerator {
     for (let i = 1; i < range.count; i++) {
       doc.switchToPage(i);
 
+      // Header/footer sit inside the page margins; without this PDFKit starts a new
+      // (blank) page for every line written there.
+      const savedMargins = { ...doc.page.margins };
+      doc.page.margins = { ...savedMargins, top: 0, bottom: 0 };
+
       // Running Header
       doc.fillColor('#94a3b8').fontSize(7.5).font('Helvetica')
         .text(`${reportData.branding.agencyName} | ${reportData.metadata.websiteName} (${reportData.metadata.domain})`,
-          40, 20, { width: doc.page.width - 80, align: 'left' });
+          40, 20, { width: doc.page.width - 80, align: 'left', lineBreak: false });
 
       doc.text(this.formatReportTitle(reportData.metadata.reportType),
-        40, 20, { width: doc.page.width - 80, align: 'right' });
+        40, 20, { width: doc.page.width - 80, align: 'right', lineBreak: false });
 
       doc.rect(40, 32, doc.page.width - 80, 0.5).fill('#e2e8f0');
 
@@ -531,10 +558,12 @@ export class PdfReportGenerator {
 
       doc.fillColor('#94a3b8').fontSize(7.5).font('Helvetica')
         .text(reportData.branding.footerText || 'Confidential Performance Audit',
-          40, doc.page.height - 25, { width: doc.page.width - 80, align: 'left' });
+          40, doc.page.height - 25, { width: doc.page.width - 80, align: 'left', lineBreak: false });
 
       doc.text(`Page ${i + 1} of ${range.count}`,
-        40, doc.page.height - 25, { width: doc.page.width - 80, align: 'right' });
+        40, doc.page.height - 25, { width: doc.page.width - 80, align: 'right', lineBreak: false });
+
+      doc.page.margins = savedMargins;
     }
   }
 

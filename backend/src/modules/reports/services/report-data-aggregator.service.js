@@ -357,8 +357,20 @@ export class ReportDataAggregatorService {
     else if (trafficChange < -5) trendDirection = `declined by ${Math.abs(trafficChange).toFixed(1)}%`;
     else trendDirection = 'remained broadly stable';
 
+    // Only talk about sessions when GA4 is connected; otherwise "0 sessions,
+    // broadly stable" is misleading.
+    const ga4Connected = Boolean(dataFreshness?.GA4?.connected);
+    const gscChange = gscSummary?.comparison?.clicksChangePercent;
+    const gscTrend =
+      gscChange === null || gscChange === undefined
+        ? ''
+        : ` Organic search clicks ${gscChange > 5 ? `increased by ${gscChange.toFixed(1)}%` : gscChange < -5 ? `declined by ${Math.abs(gscChange).toFixed(1)}%` : 'remained broadly stable'} compared to the previous equivalent period.`;
+    const opening = ga4Connected
+      ? `During the reporting period from ${formattedPeriod}, ${websiteName} (${domain}) recorded ${sessions.toLocaleString()} sessions and ${clicks.toLocaleString()} organic search clicks across ${impressions.toLocaleString()} search impressions. Overall session volume ${trendDirection} compared to the previous equivalent period.`
+      : `During the reporting period from ${formattedPeriod}, ${websiteName} (${domain}) received ${clicks.toLocaleString()} organic search clicks across ${impressions.toLocaleString()} search impressions.${gscTrend} Google Analytics 4 is not connected, so on-site session and conversion figures are not included in this report.`;
+
     const deterministicSummary = [
-      `During the reporting period from ${formattedPeriod}, ${websiteName} (${domain}) recorded ${sessions.toLocaleString()} sessions and ${clicks.toLocaleString()} organic search clicks across ${impressions.toLocaleString()} search impressions. Overall organic session volume ${trendDirection} compared to the previous equivalent period.`,
+      opening,
       keywordOpportunities.length > 0
         ? `A total of ${keywordOpportunities.length} high-potential striking distance search queries (ranking between positions 4 and 20) were identified, presenting near-term ranking advancement opportunities.`
         : 'Search ranking distributions across tracked queries remained concentrated in existing target brackets.',

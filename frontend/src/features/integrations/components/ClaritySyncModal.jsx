@@ -56,8 +56,16 @@ export default function ClaritySyncModal({
             </span>
           </div>
           <p>
-            Microsoft Clarity provides recent live insights for the last 1, 2, or 3 days (not arbitrary historical date pickers). Data is captured as a permanent, queryable snapshot.
+            Microsoft Clarity only exports a rolling window of the last 1, 2, or 3 days. Its API does not accept custom start and end dates. Each import is saved as a snapshot you can review later.
           </p>
+          <a
+            href="https://learn.microsoft.com/en-us/clarity/setup-and-installation/clarity-data-export-api"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 font-medium text-brand-700 underline"
+          >
+            Microsoft Clarity API date limits
+          </a>
         </div>
 
         {/* Rolling Window Selector */}

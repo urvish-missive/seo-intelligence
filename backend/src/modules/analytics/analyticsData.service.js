@@ -5,6 +5,8 @@
 import prisma from '../../config/database.js';
 import { NotFoundError, BadRequestError } from '../../middleware/errorHandler.js';
 import { getComparisonDateRanges, calculateComparisonMetric } from '../../utils/analyticsDate.utils.js';
+import { summariseOverview } from '../integrations/clarity/clarityImport.service.js';
+import { getEffectiveCallsToday } from '../integrations/clarity/clarityConnection.service.js';
 
 /**
  * Helper to compute default date N days ago as YYYY-MM-DD.
@@ -65,15 +67,10 @@ export class AnalyticsDataService {
         where: { websiteId, date: { gte: dateRanges.current.startDate, lte: dateRanges.current.endDate } },
         orderBy: { date: 'asc' },
       }),
-      prisma.clarityDailyMetric
-        ? prisma.clarityDailyMetric
-            .findMany({
-              where: { websiteId },
-              orderBy: { date: 'desc' },
-              take: 3, // Latest rolling snapshots
-            })
-            .catch(() => [])
-        : Promise.resolve([]),
+      this.getClarityWindowTotals(workspaceId, websiteId, {
+        startDate: dateRanges.current.startDate,
+        endDate: dateRanges.current.endDate,
+      }).catch(() => null),
     ]);
 
     // Fetch Previous Period Data if compare is true
@@ -143,19 +140,15 @@ export class AnalyticsDataService {
     const currPos = currGSCTotals.impressions > 0 ? currGSCTotals.posWeight / currGSCTotals.impressions : 0;
     const prevPos = prevGSCTotals.impressions > 0 ? prevGSCTotals.posWeight / prevGSCTotals.impressions : 0;
 
-    // Aggregate Clarity Friction from latest available days
-    const clarityTotals = clarityDaily.reduce(
-      (acc, r) => {
-        acc.sessions += r.sessions;
-        acc.rageClicks += r.rageClickCount;
-        acc.deadClicks += r.deadClickCount;
-        acc.quickbacks += r.quickbackClickCount;
-        acc.excessiveScrolls += r.excessiveScrollCount;
-        acc.scriptErrors += r.scriptErrorCount;
-        return acc;
-      },
-      { sessions: 0, rageClicks: 0, deadClicks: 0, quickbacks: 0, excessiveScrolls: 0, scriptErrors: 0 }
-    );
+    // Clarity imports that cover this period (non-overlapping windows)
+    const clarityTotals = {
+      sessions: clarityDaily?.sessions || 0,
+      rageClicks: clarityDaily?.rageClickCount || 0,
+      deadClicks: clarityDaily?.deadClickCount || 0,
+      quickbacks: clarityDaily?.quickbackClickCount || 0,
+      excessiveScrolls: clarityDaily?.excessiveScrollCount || 0,
+      scriptErrors: clarityDaily?.scriptErrorCount || 0,
+    };
 
     const totalFrictionEvents =
       clarityTotals.rageClicks +
@@ -739,172 +732,226 @@ export class AnalyticsDataService {
   // ───────────────────────────────────────────────────────────────────────────
   // 4. CLARITY BEHAVIORAL DASHBOARD
   // ───────────────────────────────────────────────────────────────────────────
+  /**
+   * Clarity totals for a date range, built from the stored import snapshots.
+   *
+   * Every Clarity import covers a rolling window (the last 1-3 days before the
+   * import ran), so it must be matched to a period by its real window, not by
+   * the day it was imported. Windows that overlap the period are taken newest
+   * first, skipping any that overlap a window already used, so no visit is
+   * counted twice. Without a range, the latest import is used.
+   */
+  async getClarityWindowTotals(workspaceId, websiteId, { startDate, endDate } = {}) {
+    const hasRange = Boolean(startDate && endDate);
+    const where = {
+      websiteId,
+      workspaceId,
+      preset: 'OVERVIEW',
+      status: 'COMPLETED',
+      windowStart: { not: null },
+      windowEnd: { not: null },
+    };
+    if (hasRange) {
+      const rangeStart = new Date(`${startDate}T00:00:00.000Z`);
+      const rangeEndExclusive = new Date(new Date(`${endDate}T00:00:00.000Z`).getTime() + 86400000);
+      where.windowStart = { lt: rangeEndExclusive };
+      where.windowEnd = { gt: rangeStart };
+    }
+
+    const candidates = await prisma.clarityImportSnapshot.findMany({
+      where,
+      orderBy: { windowEnd: 'desc' },
+      take: hasRange ? 200 : 5,
+      select: { id: true, windowStart: true, windowEnd: true, requestedNumOfDays: true, createdAt: true, rawResponseJson: true },
+    });
+
+    const TOLERANCE_MS = 2 * 60 * 60 * 1000; // imports a little apart still count as back-to-back
+    const chosen = [];
+    let earliestStart = Infinity;
+    for (const snap of candidates) {
+      let raw;
+      try {
+        raw = JSON.parse(snap.rawResponseJson);
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(raw) || raw.length === 0) continue;
+      const start = new Date(snap.windowStart).getTime();
+      const end = new Date(snap.windowEnd).getTime();
+      if (end > earliestStart + TOLERANCE_MS) continue; // overlaps a newer window already used
+      chosen.push({ snap, summary: summariseOverview(raw) });
+      earliestStart = start;
+      if (!hasRange) break;
+    }
+
+    const totals = {
+      sessions: 0, botSessions: 0, distinctUsers: 0,
+      rageClickCount: 0, deadClickCount: 0, excessiveScrollCount: 0,
+      quickbackClickCount: 0, scriptErrorCount: 0, errorClickCount: 0,
+      ppsWeight: 0, scrollWeight: 0, activeWeight: 0, totalTimeWeight: 0,
+    };
+    const pages = new Map();
+    const devices = new Map();
+    const countries = new Map();
+    const addTo = (map, items) => items.forEach(({ key, sessions }) => map.set(key, (map.get(key) || 0) + sessions));
+
+    for (const { summary: s } of chosen) {
+      totals.sessions += s.sessions;
+      totals.botSessions += s.botSessions;
+      totals.distinctUsers += s.distinctUsers;
+      totals.rageClickCount += s.rageClickCount;
+      totals.deadClickCount += s.deadClickCount;
+      totals.excessiveScrollCount += s.excessiveScrollCount;
+      totals.quickbackClickCount += s.quickbackClickCount;
+      totals.scriptErrorCount += s.scriptErrorCount;
+      totals.errorClickCount += s.errorClickCount;
+      totals.ppsWeight += s.pagesPerSession * s.sessions;
+      totals.scrollWeight += s.avgScrollDepth * s.sessions;
+      totals.activeWeight += s.avgTimeOnPageSec * s.sessions;
+      totals.totalTimeWeight += s.totalTimeSec * s.sessions;
+      addTo(pages, s.pages);
+      addTo(devices, s.devices);
+      addTo(countries, s.countries);
+    }
+
+    const per = (w) => (totals.sessions > 0 ? w / totals.sessions : 0);
+    const windows = chosen
+      .map(({ snap, summary }) => ({
+        start: snap.windowStart,
+        end: snap.windowEnd,
+        days: snap.requestedNumOfDays,
+        importedAt: snap.createdAt,
+        sessions: summary.sessions,
+        rageClickCount: summary.rageClickCount,
+        deadClickCount: summary.deadClickCount,
+        quickbackClickCount: summary.quickbackClickCount,
+      }))
+      .sort((a, b) => new Date(a.start) - new Date(b.start));
+
+    const sorted = (map, keyName) =>
+      Array.from(map.entries())
+        .map(([key, sessions]) => ({ [keyName]: key, sessions }))
+        .sort((a, b) => b.sessions - a.sessions);
+
+    return {
+      sessions: totals.sessions,
+      botSessions: totals.botSessions,
+      distinctUsers: totals.distinctUsers,
+      rageClickCount: totals.rageClickCount,
+      deadClickCount: totals.deadClickCount,
+      excessiveScrollCount: totals.excessiveScrollCount,
+      quickbackClickCount: totals.quickbackClickCount,
+      scriptErrorCount: totals.scriptErrorCount,
+      errorClickCount: totals.errorClickCount,
+      pagesPerSession: parseFloat(per(totals.ppsWeight).toFixed(2)),
+      avgScrollDepth: parseFloat(per(totals.scrollWeight).toFixed(2)),
+      avgTimeOnPageSec: Math.round(per(totals.activeWeight)),
+      totalTimeSec: Math.round(per(totals.totalTimeWeight)),
+      pages: sorted(pages, 'page'),
+      devices: sorted(devices, 'device'),
+      countries: sorted(countries, 'country'),
+      windows,
+      coverage: windows.length
+        ? { from: windows[0].start, to: windows[windows.length - 1].end, imports: windows.length }
+        : null,
+    };
+  }
+
   async getClaritySummary(workspaceId, websiteId, { startDate, endDate } = {}) {
     const website = await this.verifyWebsite(workspaceId, websiteId);
     const hasRange = Boolean(startDate && endDate);
+    const t = await this.getClarityWindowTotals(workspaceId, websiteId, hasRange ? { startDate, endDate } : {});
 
-    let dailyMetrics;
-    let topPages;
-    let deviceBreakdown;
-
-    if (hasRange) {
-      // Date-range mode: the scheduled Clarity sync stores one 1-day import per day,
-      // so the days in the range are added up and pages/devices merged across them.
-      const dateFilter = { gte: startDate, lte: endDate };
-      const [daily, pages, devices] = await Promise.all([
-        prisma.clarityDailyMetric.findMany({ where: { websiteId, date: dateFilter }, orderBy: { date: 'desc' } }),
-        prisma.clarityPageMetric.findMany({ where: { websiteId, date: dateFilter } }),
-        prisma.clarityDeviceMetric.findMany({ where: { websiteId, date: dateFilter } }),
-      ]);
-      dailyMetrics = daily;
-
-      const pageMap = new Map();
-      for (const p of pages) {
-        const e = pageMap.get(p.page) || { page: p.page, sessions: 0, rageClicks: 0, deadClicks: 0, quickBacks: 0, scrollW: 0, timeW: 0 };
-        e.sessions += p.sessions;
-        e.rageClicks += p.rageClicks;
-        e.deadClicks += p.deadClicks;
-        e.quickBacks += p.quickBacks;
-        e.scrollW += p.avgScrollDepth * p.sessions;
-        e.timeW += p.avgTimeOnPageSec * p.sessions;
-        pageMap.set(p.page, e);
-      }
-      topPages = Array.from(pageMap.values())
-        .map(({ scrollW, timeW, ...e }) => ({
-          ...e,
-          avgScrollDepth: e.sessions > 0 ? parseFloat((scrollW / e.sessions).toFixed(1)) : 0,
-          avgTimeOnPageSec: e.sessions > 0 ? Math.round(timeW / e.sessions) : 0,
-        }))
-        .sort((a, b) => b.rageClicks - a.rageClicks || b.deadClicks - a.deadClicks || b.sessions - a.sessions)
-        .slice(0, 15);
-
-      const deviceMap = new Map();
-      for (const d of devices) {
-        const e = deviceMap.get(d.device) || { device: d.device, sessions: 0 };
-        e.sessions += d.sessions;
-        deviceMap.set(d.device, e);
-      }
-      deviceBreakdown = Array.from(deviceMap.values()).sort((a, b) => b.sessions - a.sessions).slice(0, 10);
-    } else {
-      // No range: report only the latest import (a single rolling 1-3 day aggregate).
-      const [latestPageRow, latestDeviceRow] = await Promise.all([
-        prisma.clarityPageMetric.findFirst({ where: { websiteId }, orderBy: { date: 'desc' }, select: { date: true } }),
-        prisma.clarityDeviceMetric.findFirst({ where: { websiteId }, orderBy: { date: 'desc' }, select: { date: true } }),
-      ]);
-      [dailyMetrics, topPages, deviceBreakdown] = await Promise.all([
-        prisma.clarityDailyMetric.findMany({ where: { websiteId }, orderBy: { date: 'desc' }, take: 1 }),
-        latestPageRow
-          ? prisma.clarityPageMetric.findMany({
-              where: { websiteId, date: latestPageRow.date },
-              orderBy: [{ rageClicks: 'desc' }, { deadClicks: 'desc' }, { sessions: 'desc' }],
-              take: 15,
-            })
-          : Promise.resolve([]),
-        latestDeviceRow
-          ? prisma.clarityDeviceMetric.findMany({
-              where: { websiteId, date: latestDeviceRow.date },
-              orderBy: { sessions: 'desc' },
-              take: 10,
-            })
-          : Promise.resolve([]),
-      ]);
+    // Per-page friction comes from URL-preset imports stored in clarity_page_metrics
+    let frictionRows = [];
+    if (t.coverage) {
+      const fromDate = new Date(t.coverage.from).toISOString().slice(0, 10);
+      const toDate = new Date(t.coverage.to).toISOString().slice(0, 10);
+      frictionRows = await prisma.clarityPageMetric.findMany({
+        where: {
+          websiteId,
+          date: { gte: fromDate, lte: toDate },
+          OR: [{ deadClicks: { gt: 0 } }, { rageClicks: { gt: 0 } }, { quickBacks: { gt: 0 } }],
+        },
+      });
     }
-
-    const [latestSnapshot] = await Promise.all([
-      prisma.clarityImportSnapshot.findFirst({
-        where: { websiteId, workspaceId, preset: 'OVERVIEW' },
-        orderBy: { createdAt: 'desc' },
-      }).then((snap) => snap || prisma.clarityImportSnapshot.findFirst({
-        where: { websiteId, workspaceId },
-        orderBy: { createdAt: 'desc' },
-      })),
-    ]);
-
-    const totals = dailyMetrics.reduce(
-      (acc, r) => {
-        acc.sessions += r.sessions;
-        acc.distinctUsers += r.distinctUsers;
-        acc.botSessions += r.botSessions;
-        acc.rageClickCount += r.rageClickCount;
-        acc.deadClickCount += r.deadClickCount;
-        acc.excessiveScrollCount += r.excessiveScrollCount;
-        acc.quickbackClickCount += r.quickbackClickCount;
-        acc.scriptErrorCount += r.scriptErrorCount;
-        acc.scrollDepthWeight += r.avgScrollDepth * r.sessions;
-        acc.activeTimeWeight += r.avgTimeOnPageSec * r.sessions;
-        return acc;
-      },
-      {
-        sessions: 0,
-        distinctUsers: 0,
-        botSessions: 0,
-        rageClickCount: 0,
-        deadClickCount: 0,
-        excessiveScrollCount: 0,
-        quickbackClickCount: 0,
-        scriptErrorCount: 0,
-        scrollDepthWeight: 0,
-        activeTimeWeight: 0,
+    const friction = new Map();
+    for (const r of frictionRows) {
+      const f = friction.get(r.page) || { deadClicks: 0, rageClicks: 0, quickBacks: 0, scrollW: 0, n: 0 };
+      f.deadClicks += r.deadClicks;
+      f.rageClicks += r.rageClicks;
+      f.quickBacks += r.quickBacks;
+      if (r.avgScrollDepth) {
+        f.scrollW += r.avgScrollDepth;
+        f.n += 1;
       }
-    );
+      friction.set(r.page, f);
+    }
+    const sessionsByPage = new Map(t.pages.map((p) => [p.page, p.sessions]));
+    const pageKeys = new Set([...sessionsByPage.keys(), ...friction.keys()]);
+    const topPages = Array.from(pageKeys)
+      .map((page) => {
+        const f = friction.get(page) || {};
+        return {
+          page,
+          sessions: sessionsByPage.get(page) || 0,
+          deadClicks: f.deadClicks || 0,
+          rageClicks: f.rageClicks || 0,
+          quickBacks: f.quickBacks || 0,
+          avgScrollDepth: f.n ? parseFloat((f.scrollW / f.n).toFixed(1)) : 0,
+        };
+      })
+      .sort((a, b) => b.rageClicks - a.rageClicks || b.deadClicks - a.deadClicks || b.sessions - a.sessions)
+      .slice(0, 15);
 
-    const avgScrollDepth = totals.sessions > 0 ? parseFloat((totals.scrollDepthWeight / totals.sessions).toFixed(1)) : 0;
-    const avgTimeOnPageSec = totals.sessions > 0 ? Math.round(totals.activeTimeWeight / totals.sessions) : 0;
-
-    const rageClickRate = totals.sessions > 0 ? parseFloat(((totals.rageClickCount / totals.sessions) * 100).toFixed(1)) : 0;
-    const deadClickRate = totals.sessions > 0 ? parseFloat(((totals.deadClickCount / totals.sessions) * 100).toFixed(1)) : 0;
-    const quickbackRate = totals.sessions > 0 ? parseFloat(((totals.quickbackClickCount / totals.sessions) * 100).toFixed(1)) : 0;
-    const scriptErrorRate = totals.sessions > 0 ? parseFloat(((totals.scriptErrorCount / totals.sessions) * 100).toFixed(1)) : 0;
-
+    const rate = (n) => (t.sessions > 0 ? parseFloat(((n / t.sessions) * 100).toFixed(1)) : 0);
+    const latest = t.windows[t.windows.length - 1];
     const clarityConn = website.integrations.find((i) => i.integrationType === 'CLARITY')?.clarityConnection;
-    const quotaIsCurrent = clarityConn?.apiCallsResetAt &&
-      new Date(clarityConn.apiCallsResetAt) >= new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`);
+    const callsToday = getEffectiveCallsToday(clarityConn);
 
     return {
-      reportingWindow: latestSnapshot
+      reportingWindow: latest
         ? {
-            days: latestSnapshot.requestedNumOfDays,
-            windowStart: latestSnapshot.windowStart,
-            windowEnd: latestSnapshot.windowEnd,
-            lastImportAt: latestSnapshot.createdAt,
-            preset: latestSnapshot.preset,
+            days: latest.days,
+            windowStart: t.coverage.from,
+            windowEnd: t.coverage.to,
+            lastImportAt: latest.importedAt,
+            imports: t.windows.length,
           }
         : null,
-      quota: clarityConn
-        ? {
-            callsToday: quotaIsCurrent ? clarityConn.apiCallsToday : 0,
-            callsRemaining: Math.max(0, 10 - (quotaIsCurrent ? clarityConn.apiCallsToday : 0)),
-            limit: 10,
-          }
-        : null,
+      coverage: t.coverage,
+      windows: t.windows,
+      quota: clarityConn ? { callsToday, callsRemaining: Math.max(0, 10 - callsToday), limit: 10 } : null,
       friction: {
-        totalSessions: totals.sessions,
-        distinctUsers: totals.distinctUsers,
-        rageClickCount: totals.rageClickCount,
-        rageClickRate,
-        deadClickCount: totals.deadClickCount,
-        deadClickRate,
-        quickbackClickCount: totals.quickbackClickCount,
-        quickbackRate,
-        excessiveScrollCount: totals.excessiveScrollCount,
-        scriptErrorCount: totals.scriptErrorCount,
-        scriptErrorRate,
-        avgScrollDepth,
-        avgTimeOnPageSec,
+        totalSessions: t.sessions,
+        botSessions: t.botSessions,
+        distinctUsers: t.distinctUsers,
+        pagesPerSession: t.pagesPerSession,
+        rageClickCount: t.rageClickCount,
+        rageClickRate: rate(t.rageClickCount),
+        deadClickCount: t.deadClickCount,
+        deadClickRate: rate(t.deadClickCount),
+        quickbackClickCount: t.quickbackClickCount,
+        quickbackRate: rate(t.quickbackClickCount),
+        excessiveScrollCount: t.excessiveScrollCount,
+        scriptErrorCount: t.scriptErrorCount,
+        scriptErrorRate: rate(t.scriptErrorCount),
+        avgScrollDepth: t.avgScrollDepth,
+        avgTimeOnPageSec: t.avgTimeOnPageSec,
+        totalTimeSec: t.totalTimeSec,
       },
       topPages,
-      deviceBreakdown,
+      deviceBreakdown: t.devices.slice(0, 10),
+      countryBreakdown: t.countries.slice(0, 10),
       dateRange: hasRange ? { startDate, endDate } : null,
-      daysWithData: dailyMetrics.length,
-      dailyTrend: [...dailyMetrics]
-        .sort((a, b) => a.date.localeCompare(b.date))
-        .map((r) => ({
-          date: r.date,
-          sessions: r.sessions,
-          rageClickCount: r.rageClickCount,
-          deadClickCount: r.deadClickCount,
-          quickbackClickCount: r.quickbackClickCount,
-        })),
+      daysWithData: t.windows.reduce((acc, w) => acc + (w.days || 0), 0),
+      dailyTrend: t.windows.map((w) => ({
+        date: new Date(w.end).toISOString().slice(0, 10),
+        sessions: w.sessions,
+        rageClickCount: w.rageClickCount,
+        deadClickCount: w.deadClickCount,
+        quickbackClickCount: w.quickbackClickCount,
+      })),
     };
   }
 
@@ -940,12 +987,16 @@ export class AnalyticsDataService {
       clients.map(async (client) => {
         const websitesData = await Promise.all(
           client.websites.map(async (web) => {
-            const [gscCur, ga4Cur, gscPrev, ga4Prev, clarityCur] = await Promise.all([
+            const [gscCur, ga4Cur, gscPrev, ga4Prev, clarityCur, ga4CountriesCur] = await Promise.all([
               prisma.gSCDailyMetric.findMany({ where: { websiteId: web.id, date: cur } }),
               prisma.gA4DailyMetric.findMany({ where: { websiteId: web.id, date: cur } }),
               prisma.gSCDailyMetric.findMany({ where: { websiteId: web.id, date: prev } }),
               prisma.gA4DailyMetric.findMany({ where: { websiteId: web.id, date: prev } }),
-              prisma.clarityDailyMetric.findMany({ where: { websiteId: web.id, date: cur } }),
+              this.getClarityWindowTotals(workspaceId, web.id, {
+                startDate: ranges.current.startDate,
+                endDate: ranges.current.endDate,
+              }).catch(() => null),
+              prisma.gA4CountryMetric.findMany({ where: { websiteId: web.id, date: cur } }),
             ]);
 
             const clicks = sum(gscCur, 'clicks');
@@ -957,7 +1008,15 @@ export class AnalyticsDataService {
             const ctr = impressions > 0 ? parseFloat(((clicks / impressions) * 100).toFixed(2)) : 0;
             const avgPosition = impressions > 0 ? parseFloat((posWeight / impressions).toFixed(1)) : 0;
             const frictionEvents =
-              sum(clarityCur, 'rageClickCount') + sum(clarityCur, 'deadClickCount') + sum(clarityCur, 'quickbackClickCount');
+              (clarityCur?.rageClickCount || 0) + (clarityCur?.deadClickCount || 0) + (clarityCur?.quickbackClickCount || 0);
+            const countrySessions = new Map();
+            for (const row of ga4CountriesCur) {
+              countrySessions.set(row.country, (countrySessions.get(row.country) || 0) + row.sessions);
+            }
+            const countryBreakdown = Array.from(countrySessions, ([country, countryCount]) => ({
+              country,
+              sessions: countryCount,
+            })).sort((a, b) => b.sessions - a.sessions);
             const previous = {
               clicks: sum(gscPrev, 'clicks'),
               impressions: sum(gscPrev, 'impressions'),
@@ -989,7 +1048,8 @@ export class AnalyticsDataService {
               avgPosition,
               sessions,
               users,
-              claritySessions: sum(clarityCur, 'sessions'),
+              claritySessions: clarityCur?.sessions || 0,
+              countryBreakdown,
               changes,
               previous,
               // Shape read by the agency overview table
@@ -1001,7 +1061,7 @@ export class AnalyticsDataService {
                 ga4Sessions: sessions,
                 ga4OrganicSessions: organicSessions,
                 ga4Users: users,
-                claritySessions: sum(clarityCur, 'sessions'),
+                claritySessions: clarityCur?.sessions || 0,
                 clarityFrustratedSessions: frictionEvents,
               },
               integrationDetails: web.integrations,

@@ -121,6 +121,51 @@ function primaryValue(row) {
   );
 }
 
+/**
+ * Site-wide totals from one Clarity OVERVIEW response (no dimensions).
+ * Used both when importing and when reporting from stored snapshots.
+ */
+export function summariseOverview(data = []) {
+  const g = (...names) => findGroup(data, ...names);
+  const traffic = g('Traffic');
+  const trafficRows = groupRows(traffic);
+  const sum = (group, fn) => groupRows(group).reduce((acc, row) => acc + fn(row), 0);
+  const avg = (group, fn) => {
+    const rows = groupRows(group);
+    return rows.length ? rows.reduce((acc, row) => acc + fn(row), 0) / rows.length : 0;
+  };
+
+  const sessions = Math.round(sum(traffic, trafficSessions));
+  const pagesPerSession = sessions > 0
+    ? trafficRows.reduce((acc, r) => acc + trafficPagesPerSession(r) * trafficSessions(r), 0) / sessions
+    : avg(traffic, trafficPagesPerSession);
+  const engagement = g('EngagementTime', 'Engagement Time');
+
+  const list = (group, keyFn) =>
+    groupRows(group)
+      .map((row) => ({ key: keyFn(row), sessions: Math.round(listSessions(row)) }))
+      .filter((x) => x.key);
+
+  return {
+    sessions,
+    botSessions: Math.round(sum(traffic, trafficBots)),
+    distinctUsers: Math.round(sum(traffic, trafficUsers)),
+    pagesPerSession: parseFloat(pagesPerSession.toFixed(2)),
+    rageClickCount: Math.round(sum(g('RageClickCount', 'Rage Click Count'), frictionCount)),
+    deadClickCount: Math.round(sum(g('DeadClickCount', 'Dead Click Count'), frictionCount)),
+    excessiveScrollCount: Math.round(sum(g('ExcessiveScroll', 'Excessive Scroll'), frictionCount)),
+    quickbackClickCount: Math.round(sum(g('QuickbackClick', 'Quick Back', 'Quickback'), frictionCount)),
+    scriptErrorCount: Math.round(sum(g('ScriptErrorCount', 'Script Error Count'), frictionCount)),
+    errorClickCount: Math.round(sum(g('ErrorClickCount', 'Error Click Count'), frictionCount)),
+    avgScrollDepth: parseFloat(avg(g('ScrollDepth', 'Scroll Depth'), scrollDepth).toFixed(2)),
+    avgTimeOnPageSec: parseFloat(avg(engagement, engagementSeconds).toFixed(2)),
+    totalTimeSec: parseFloat(avg(engagement, (r) => num(pick(r, 'totalTime'))).toFixed(2)),
+    pages: list(g('PopularPages', 'Popular Pages'), (r) => String(pick(r, 'url', 'URL', 'name') || '').substring(0, 500)),
+    devices: list(g('Device'), (r) => String(pick(r, 'name', 'Device') || '').toLowerCase().substring(0, 50)),
+    countries: list(g('Country', 'Country/Region', 'CountryRegion'), (r) => String(pick(r, 'name', 'Country/Region', 'Country') || '').substring(0, 100)),
+  };
+}
+
 async function runInBatches(ops) {
   for (let i = 0; i < ops.length; i += WRITE_BATCH_SIZE) {
     await prisma.$transaction(ops.slice(i, i + WRITE_BATCH_SIZE));
@@ -374,35 +419,10 @@ export class ClarityImportService {
     const countryGroup = findGroup(data, 'Country', 'Country/Region', 'CountryRegion');
     const popularPagesGroup = findGroup(data, 'PopularPages', 'Popular Pages');
 
-    const sumRows = (group, fn) => groupRows(group).reduce((acc, row) => acc + fn(row), 0);
-    const avgRows = (group, fn) => {
-      const rows = groupRows(group);
-      return rows.length ? rows.reduce((acc, row) => acc + fn(row), 0) / rows.length : 0;
-    };
-
     // ─── A. OVERVIEW: one site-wide daily row ──────────────────────────────
     if (preset === 'OVERVIEW' || !preset) {
-      const sessions = Math.round(sumRows(trafficGroup, trafficSessions));
-      const trafficRows = groupRows(trafficGroup);
-      // Weighted by sessions in case Clarity splits the totals across rows
-      const pagesPerSession = sessions > 0
-        ? trafficRows.reduce((acc, r) => acc + trafficPagesPerSession(r) * trafficSessions(r), 0) / sessions
-        : avgRows(trafficGroup, trafficPagesPerSession);
-
-      const values = {
-        sessions,
-        distinctUsers: Math.round(sumRows(trafficGroup, trafficUsers)),
-        botSessions: Math.round(sumRows(trafficGroup, trafficBots)),
-        pagesPerSession: parseFloat(pagesPerSession.toFixed(2)),
-        rageClickCount: Math.round(sumRows(rageClickGroup, frictionCount)),
-        deadClickCount: Math.round(sumRows(deadClickGroup, frictionCount)),
-        excessiveScrollCount: Math.round(sumRows(excessiveScrollGroup, frictionCount)),
-        quickbackClickCount: Math.round(sumRows(quickbackGroup, frictionCount)),
-        scriptErrorCount: Math.round(sumRows(scriptErrorGroup, frictionCount)),
-        errorClickCount: Math.round(sumRows(errorClickGroup, frictionCount)),
-        avgScrollDepth: parseFloat(avgRows(scrollDepthGroup, scrollDepth).toFixed(2)),
-        avgTimeOnPageSec: parseFloat(avgRows(engagementGroup, engagementSeconds).toFixed(2)),
-      };
+      // eslint-disable-next-line no-unused-vars
+      const { pages, devices, countries, totalTimeSec, ...values } = summariseOverview(data);
 
       ops.push(
         prisma.clarityDailyMetric.upsert({

@@ -25,14 +25,31 @@ export default function PropertySelectModal({
     { skip: !isOpen || !workspaceId }
   );
 
-  const [fetchGA4, { data: ga4Data, isFetching: isFetchingGA4 }] = useLazyGetGA4PropertiesQuery();
-  const [fetchGSC, { data: gscData, isFetching: isFetchingGSC }] = useLazyGetGSCSitesQuery();
+  const [fetchGA4, { currentData: ga4Data, error: ga4Error, isFetching: isFetchingGA4 }] = useLazyGetGA4PropertiesQuery();
+  const [fetchGSC, { currentData: gscData, error: gscError, isFetching: isFetchingGSC }] = useLazyGetGSCSitesQuery();
   const [connectProperty, { isLoading: isConnecting }] = useConnectWebsitePropertyMutation();
 
   const accounts = accountsData?.data || [];
   const properties =
     integrationType === 'GA4' ? ga4Data?.data || [] : gscData?.data || [];
+  const propertyError = integrationType === 'GA4' ? ga4Error : gscError;
+  const propertyErrorMessage = propertyError?.data?.message || propertyError?.error || 'The request failed.';
+  const analyticsAdminApiDisabled = integrationType === 'GA4' &&
+    /analyticsadmin\.googleapis\.com|Google Analytics Admin API has not been used|API.*disabled/i.test(propertyErrorMessage);
+  const googleProjectId = propertyErrorMessage.match(/[?&]project=(\d+)/i)?.[1];
+  const analyticsAdminApiUrl = googleProjectId
+    ? `https://console.cloud.google.com/apis/api/analyticsadmin.googleapis.com/overview?project=${googleProjectId}`
+    : 'https://console.cloud.google.com/apis/library/analyticsadmin.googleapis.com';
   const isFetchingProperties = isFetchingGA4 || isFetchingGSC;
+
+  const retryPropertyDiscovery = () => {
+    if (!selectedAccountId) return;
+    if (integrationType === 'GA4') {
+      fetchGA4({ workspaceId, accountId: selectedAccountId });
+    } else {
+      fetchGSC({ workspaceId, accountId: selectedAccountId });
+    }
+  };
 
   // Set default account when accounts load
   useEffect(() => {
@@ -162,7 +179,24 @@ export default function PropertySelectModal({
                   );
                 })}
           </select>
-          {properties.length === 0 && !isFetchingProperties && selectedAccountId && (
+          {propertyError && selectedAccountId && !isFetchingProperties && (
+            <div role="alert" className="mt-2 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-800">
+              <p>
+                Could not load {integrationType === 'GA4' ? 'GA4 properties' : 'Search Console sites'}:
+                {' '}{propertyErrorMessage}
+              </p>
+              {analyticsAdminApiDisabled && (
+                <p className="mt-2">
+                  Enable the Google Analytics Admin API in the Google Cloud project used by this app, wait a few minutes, then retry.
+                  {' '}<a href={analyticsAdminApiUrl} target="_blank" rel="noreferrer" className="font-semibold underline">Open API settings</a>
+                </p>
+              )}
+              <button type="button" onClick={retryPropertyDiscovery} className="mt-2 font-semibold underline">
+                Retry discovery
+              </button>
+            </div>
+          )}
+          {!propertyError && properties.length === 0 && !isFetchingProperties && selectedAccountId && (
             <p className="text-xs text-surface-400 mt-1">
               No accessible {integrationType === 'GA4' ? 'GA4 properties' : 'GSC sites'} were found on this account.
             </p>

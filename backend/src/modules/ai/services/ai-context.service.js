@@ -34,6 +34,14 @@ function daysAgo(n) {
   return d.toISOString().slice(0, 10);
 }
 
+function requestedClarityRange(message = '') {
+  const text = message.toLowerCase();
+  const match = text.match(/(?:last|past|previous)\s+(\d+)\s+days?/);
+  const days = match ? Math.min(30, Math.max(1, Number(match[1]))) : null;
+  if (!days || !/(clarity|session|visitor|behavio|friction)/.test(text)) return null;
+  return { startDate: daysAgo(days), endDate: daysAgo(1), days };
+}
+
 /** Read a metric that may be a number or a { current|value, percentChange } object. */
 function metricValue(m) {
   if (m === null || m === undefined) return null;
@@ -296,11 +304,11 @@ export class AIContextService {
   /**
    * Portfolio-level context when no website is selected.
    */
-  async getWorkspacePortfolio(workspaceId) {
+  async getWorkspacePortfolio(workspaceId, range = null) {
     try {
       const overview = await analyticsDataService.getAgencyOverview(workspaceId, {
-        startDate: daysAgo(WINDOW_DAYS),
-        endDate: daysAgo(1),
+        startDate: range?.startDate || daysAgo(WINDOW_DAYS),
+        endDate: range?.endDate || daysAgo(1),
       });
       return overview;
     } catch (err) {
@@ -312,7 +320,7 @@ export class AIContextService {
   /**
    * Render the evidence as compact text, most relevant sections first.
    */
-  formatContext({ intent, website, analytics, topSearch, strikingKeywords, topPages, clarityFriction, seoFindings, portfolio }) {
+  formatContext({ intent, website, analytics, topSearch, strikingKeywords, topPages, clarityFriction, seoFindings, portfolio, clarityRequested, clarityRecent }) {
     const sections = [];
 
     if (!website) {
@@ -330,13 +338,19 @@ export class AIContextService {
                 const ga4 = w.integrations?.ga4
                   ? `GA4 sessions ${fmtNum(w.sessions)}${ch(w.changes?.sessions)}, users ${fmtNum(w.users)}`
                   : 'GA4 not connected';
-                return `- ${w.domain} [${w.clientName}]: ${gsc}; ${ga4}`;
+                const clarity = clarityRequested
+                  ? w.integrations?.clarity
+                    ? `Clarity sessions ${fmtNum(w.claritySessions)}${w.integrationDetails?.find((i) => i.integrationType === 'CLARITY')?.lastSyncAt ? ` (last synced ${new Date(w.integrationDetails.find((i) => i.integrationType === 'CLARITY').lastSyncAt).toISOString().slice(0, 10)})` : ' (no import timestamp)'}`
+                    : 'Clarity not connected to this website'
+                  : '';
+                return `- ${w.domain} [${w.clientName}]: ${gsc}; ${ga4}${clarity ? `; ${clarity}` : ''}`;
               })
               .join('\n')
         );
       } else {
         sections.push('No websites with synced data found in this workspace.');
       }
+      if (clarityRequested) sections.unshift(`CLARITY REQUEST: sessions over ${clarityRequested.days} days (${clarityRequested.startDate} to ${clarityRequested.endDate}); portfolio counts are per website and come from stored Clarity imports.`);
       return sections.join('\n\n');
     }
 
@@ -397,6 +411,19 @@ export class AIContextService {
       sections.push(kpiLines.join('\n'));
     } else {
       sections.push('ANALYTICS: No synced GA4/GSC data available for the last 28 days.');
+    }
+
+    if (clarityRequested) {
+      const cs = clarityRecent;
+      const imported = Boolean(cs?.reportingWindow || cs?.coverage);
+      sections.push(
+        `CLARITY REQUEST (${clarityRequested.startDate} to ${clarityRequested.endDate}): ${integ.clarity ? 'connected to this website' : 'not connected to this website'}. ` +
+        (integ.clarity && imported
+          ? `Latest import ${cs.reportingWindow?.lastImportAt ? new Date(cs.reportingWindow.lastImportAt).toISOString().slice(0, 10) : 'date unavailable'}; sessions in the requested range: ${fmtNum(cs?.friction?.totalSessions)}. Coverage: ${cs?.coverage?.from ? `${cs.coverage.from} to ${cs.coverage.to}` : 'no stored import covers this range'}.`
+          : integ.clarity
+            ? 'No completed Clarity import is recorded for this website yet.'
+            : 'The workspace may have a Clarity project connected, but this website has no active Clarity mapping.')
+      );
     }
 
     const keywordBlock = () => {
@@ -492,6 +519,7 @@ export class AIContextService {
    */
   async buildContext(workspaceId, websiteId, userMessage) {
     const intent = this.classifyIntent(userMessage);
+    const clarityRequested = requestedClarityRange(userMessage);
 
     const [
       website,
@@ -502,6 +530,7 @@ export class AIContextService {
       seoFindings,
       topSearch,
       portfolio,
+      clarityRecent,
     ] = await Promise.all([
       this.getWebsiteContext(workspaceId, websiteId),
       this.getAnalyticsSummary(workspaceId, websiteId),
@@ -510,7 +539,10 @@ export class AIContextService {
       this.getClarityFrictionPages(websiteId, 8, workspaceId),
       this.getSEOFindings(workspaceId, websiteId, 12),
       this.getTopSearchData(workspaceId, websiteId, 10),
-      websiteId ? Promise.resolve(null) : this.getWorkspacePortfolio(workspaceId),
+      websiteId ? Promise.resolve(null) : this.getWorkspacePortfolio(workspaceId, clarityRequested),
+      websiteId && clarityRequested
+        ? analyticsDataService.getClaritySummary(workspaceId, websiteId, clarityRequested).catch(() => null)
+        : Promise.resolve(null),
     ]);
 
     const contextString = this.formatContext({
@@ -523,6 +555,8 @@ export class AIContextService {
       clarityFriction,
       seoFindings,
       portfolio,
+      clarityRequested,
+      clarityRecent,
     });
 
     const evidenceMeta = {

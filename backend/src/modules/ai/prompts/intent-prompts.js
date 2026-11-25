@@ -10,7 +10,7 @@ const DIRECTIVES = {
   [AI_INTENTS.KEYWORD_OPPORTUNITIES]:
     'Focus on Search Console queries: striking-distance keywords (position 4-20), queries with high impressions but low CTR, and the pages that rank. Suggest title, meta description and content changes.',
   [AI_INTENTS.USER_BEHAVIOUR]:
-    'Focus on Microsoft Clarity: dead clicks, rage clicks, quick backs, excessive scrolling and script errors, and which pages have the most friction.',
+    'Answer Microsoft Clarity questions from the Clarity section only. For a session-count question, give the exact requested-period session total first and state its date coverage. Do not substitute GA4 sessions or describe Clarity as Google Analytics.',
   [AI_INTENTS.SEO_FINDINGS]:
     'Focus on the open SEO findings: explain each important one, why it matters and how to fix it, most severe first.',
   [AI_INTENTS.GENERAL_PERFORMANCE]:
@@ -32,5 +32,6 @@ HOW TO ANSWER:
 - Use only the DATA above. For every query, page or metric you mention, quote its exact numbers from the DATA (for example: "content optimization services" - position 5.2, 208 impressions, 4 clicks).
 - If DATA COVERAGE says % changes are not reliable, do not describe them as growth or decline.
 - If the DATA does not contain what the question needs (for example an integration is NOT connected or has no rows), say so plainly instead of guessing.
-- Keep it focused: a short answer with headings or bullets, then 3-5 numbered next steps.`;
+- If the DATA says an integration is connected, never claim it is disconnected. Distinguish a workspace-level connection from a website-level mapping when the DATA says so.
+- For a direct factual question, answer directly and do not add generic next steps. Only give recommendations when the user asks for them.`;
 }

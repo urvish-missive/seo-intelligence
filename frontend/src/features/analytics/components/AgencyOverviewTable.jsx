@@ -11,6 +11,7 @@ import {
   Activity,
   ArrowRight,
   TrendingUp,
+  RefreshCw,
 } from 'lucide-react';
 import { useGetAgencyOverviewQuery } from '../analyticsApi.js';
 import DateRangeSelector, { getInitialDateRange } from './DateRangeSelector.jsx';
@@ -75,6 +76,16 @@ export default function AgencyOverviewTable({ workspaceId, filterClientId }) {
     sessions: pctChange(totalSessions, prevTotal('sessions')),
     organicSessions: pctChange(totalOrganic, prevTotal('organicSessions')),
   };
+  const countryTotals = new Map();
+  filtered.forEach((website) => {
+    (website.countryBreakdown || []).forEach(({ country, sessions }) => {
+      countryTotals.set(country, (countryTotals.get(country) || 0) + sessions);
+    });
+  });
+  const topCountries = Array.from(countryTotals, ([country, sessions]) => ({ country, sessions }))
+    .sort((a, b) => b.sessions - a.sessions)
+    .slice(0, 10);
+  const maxCountrySessions = topCountries[0]?.sessions || 1;
 
   return (
     <div className={`space-y-4 ${isFetching ? 'opacity-70 transition-opacity' : ''}`}>
@@ -127,45 +138,81 @@ export default function AgencyOverviewTable({ workspaceId, filterClientId }) {
         </div>
       </div>
 
+      <section className="card p-5">
+        <div className="flex items-start gap-3 mb-4">
+          <Globe className="w-5 h-5 text-brand-600 mt-0.5" />
+          <div>
+            <h3 className="text-sm font-semibold text-surface-900">Top countries by GA4 sessions</h3>
+            <p className="text-xs text-surface-500 mt-0.5">Countries with the most visits across the selected websites and date range.</p>
+          </div>
+        </div>
+        {isLoading ? (
+          <p className="text-xs text-surface-400 py-3">Loading country data...</p>
+        ) : topCountries.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-3">
+            {topCountries.map((item, index) => (
+              <div key={item.country} className="flex items-center gap-3">
+                <span className="w-5 text-right text-2xs text-surface-400">{index + 1}</span>
+                <span className="w-32 truncate text-xs font-medium text-surface-700" title={item.country}>{item.country}</span>
+                <div className="flex-1 h-2 rounded-full bg-surface-100 overflow-hidden">
+                  <div className="h-full rounded-full bg-brand-500" style={{ width: `${Math.max(3, (item.sessions / maxCountrySessions) * 100)}%` }} />
+                </div>
+                <span className="w-20 text-right text-xs font-semibold text-surface-800">{item.sessions.toLocaleString()}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-surface-500 rounded-lg bg-surface-50 p-3">
+            No GA4 country data is available for this range yet. Run <strong>Import Data</strong> for the websites to load their country breakdown.
+          </p>
+        )}
+      </section>
+
       {/* Main Table */}
       <div className="card overflow-hidden">
         {/* Table Top Controls */}
-        <div className="p-4 border-b border-surface-200 bg-surface-50/50 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <h3 className="text-sm font-semibold text-surface-900">
-              {filterClientId ? 'Client Websites SEO Performance' : 'Portfolio Websites SEO Performance'}
-            </h3>
-            <span className="text-2xs bg-surface-200 text-surface-700 px-2 py-0.5 rounded-full font-medium">
-              {filtered.length} sites
-            </span>
+        <div className="px-6 py-5 border-b border-surface-200 bg-gradient-to-r from-brand-50/80 via-white to-white flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <span className="mt-1 h-10 w-1 rounded-full bg-brand-600" />
+            <div>
+              <div className="flex flex-wrap items-center gap-2.5">
+                <h3 className="text-xl sm:text-2xl font-bold text-surface-950 tracking-tight leading-tight">
+                  {filterClientId ? 'Client Websites SEO Performance' : 'Portfolio Websites SEO Performance'}
+                </h3>
+                <span className="text-xs bg-white text-surface-700 px-2.5 py-1 rounded-full font-semibold border border-surface-200 shadow-sm">
+                  {filtered.length} {filtered.length === 1 ? 'website' : 'websites'}
+                </span>
+              </div>
+              <p className="mt-1 text-sm text-surface-500">Compare search and traffic results across your websites</p>
+            </div>
           </div>
 
-          <div className="relative min-w-[240px]">
-            <Search className="w-3.5 h-3.5 text-surface-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <div className="relative w-full sm:w-72">
+            <Search className="w-4 h-4 text-surface-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Filter by domain or client..."
-              className="w-full pl-8 pr-3 py-1.5 text-xs bg-white border border-surface-200 rounded-lg text-surface-800 placeholder-surface-400 focus:outline-hidden focus:ring-1 focus:ring-brand-500"
+              className="w-full pl-9 pr-3 py-2.5 text-sm bg-white border border-surface-200 rounded-xl text-surface-800 placeholder-surface-400 focus:outline-hidden focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500"
             />
           </div>
         </div>
 
         {/* Table */}
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs text-surface-600">
-            <thead className="bg-surface-50 text-surface-500 border-b border-surface-200 uppercase text-2xs font-semibold tracking-wider">
+          <table className="w-full min-w-[1180px] text-left text-sm text-surface-600">
+            <thead className="bg-surface-50 text-surface-600 border-b border-surface-200 uppercase text-xs font-bold tracking-wide">
               <tr>
-                <th className="px-4 py-3">Website & Client</th>
-                <th className="px-4 py-3 text-right">GSC Clicks</th>
-                <th className="px-4 py-3 text-right">GSC Impressions</th>
-                <th className="px-4 py-3 text-right">Avg CTR</th>
-                <th className="px-4 py-3 text-right">GA4 Sessions</th>
-                <th className="px-4 py-3 text-right">GA4 Organic</th>
-                <th className="px-4 py-3 text-center">Clarity Friction</th>
-                <th className="px-4 py-3 text-center">Integrations</th>
-                <th className="px-4 py-3 text-right">Dashboard</th>
+                <th className="px-5 py-4 min-w-[230px]">Website & Client</th>
+                <th className="px-5 py-4 text-right min-w-[125px]">GSC Clicks</th>
+                <th className="px-5 py-4 text-right min-w-[150px]">GSC Impressions</th>
+                <th className="px-5 py-4 text-right min-w-[105px]">Avg CTR</th>
+                <th className="px-5 py-4 text-right min-w-[135px]">GA4 Sessions</th>
+                <th className="px-5 py-4 text-right min-w-[135px]">GA4 Organic</th>
+                <th className="px-5 py-4 text-center min-w-[150px]">Clarity Friction</th>
+                <th className="px-5 py-4 text-center min-w-[110px]">Integrations</th>
+                <th className="px-5 py-4 text-right min-w-[220px]">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-surface-100">
@@ -185,49 +232,49 @@ export default function AgencyOverviewTable({ workspaceId, filterClientId }) {
                 filtered.map((w) => {
                   const m = w.metrics || {};
                   return (
-                    <tr key={w.websiteId} className="hover:bg-surface-50/80 transition-colors">
+                    <tr key={w.websiteId} className="hover:bg-brand-50/40 transition-colors even:bg-surface-50/30">
                       {/* Website & Client */}
-                      <td className="px-4 py-3">
+                      <td className="px-5 py-4">
                         <Link
                           to={`/websites/${w.websiteId}`}
-                          className="font-semibold text-surface-900 hover:text-brand-600 flex items-center gap-1.5"
+                          className="text-sm font-bold text-surface-900 hover:text-brand-600 flex items-center gap-2"
                         >
                           <Globe className="w-3.5 h-3.5 text-brand-600 shrink-0" />
                           <span>{w.domain}</span>
                         </Link>
-                        <div className="text-2xs text-surface-400 flex items-center gap-1 mt-0.5">
+                        <div className="text-xs text-surface-500 flex items-center gap-1.5 mt-1">
                           <Building2 className="w-3 h-3" />
                           <span>{w.clientName}</span>
                         </div>
                       </td>
 
                       {/* GSC Clicks */}
-                      <td className="px-4 py-3 text-right font-semibold text-surface-900">
+                      <td className="px-5 py-4 text-right text-sm font-bold text-surface-900 tabular-nums">
                         {m.gscClicks ? m.gscClicks.toLocaleString() : '—'}{showChange && <ChangeBadge value={w.changes?.clicks} />}
                       </td>
 
                       {/* GSC Impressions */}
-                      <td className="px-4 py-3 text-right">
+                      <td className="px-5 py-4 text-right text-sm font-semibold text-surface-800 tabular-nums">
                         {m.gscImpressions ? m.gscImpressions.toLocaleString() : '—'}
                       </td>
 
                       {/* Avg CTR */}
-                      <td className="px-4 py-3 text-right">
+                      <td className="px-5 py-4 text-right text-sm font-semibold text-surface-800 tabular-nums">
                         {m.gscCtr !== undefined ? `${Number(m.gscCtr).toFixed(1)}%` : '—'}
                       </td>
 
                       {/* GA4 Sessions */}
-                      <td className="px-4 py-3 text-right font-semibold text-surface-900">
+                      <td className="px-5 py-4 text-right text-sm font-bold text-surface-900 tabular-nums">
                         {m.ga4Sessions ? m.ga4Sessions.toLocaleString() : '—'}{showChange && <ChangeBadge value={w.changes?.sessions} />}
                       </td>
 
                       {/* GA4 Organic */}
-                      <td className="px-4 py-3 text-right text-emerald-700 font-medium">
+                      <td className="px-5 py-4 text-right text-sm font-semibold text-emerald-700 tabular-nums">
                         {m.ga4OrganicSessions ? m.ga4OrganicSessions.toLocaleString() : '—'}
                       </td>
 
                       {/* Clarity Friction */}
-                      <td className="px-4 py-3 text-center">
+                      <td className="px-5 py-4 text-center">
                         {m.clarityFrustratedSessions ? (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 text-2xs font-semibold border border-rose-200">
                             {m.clarityFrustratedSessions.toLocaleString()} friction
@@ -238,7 +285,7 @@ export default function AgencyOverviewTable({ workspaceId, filterClientId }) {
                       </td>
 
                       {/* Integrations Badges */}
-                      <td className="px-4 py-3 text-center">
+                      <td className="px-5 py-4 text-center">
                         <div className="flex items-center justify-center gap-1">
                           <span
                             title={`GA4: ${w.integrations?.ga4 ? 'Connected' : 'Not Connected'}`}
@@ -261,15 +308,14 @@ export default function AgencyOverviewTable({ workspaceId, filterClientId }) {
                         </div>
                       </td>
 
-                      {/* Dashboard Link */}
-                      <td className="px-4 py-3 text-right">
-                        <Link
-                          to={`/websites/${w.websiteId}`}
-                          className="btn-secondary btn-sm text-2xs inline-flex items-center gap-1 py-1 px-2"
-                        >
-                          <span>Open</span>
-                          <ArrowRight className="w-3 h-3" />
-                        </Link>
+                      {/* Sync shortcuts and dashboard link */}
+                      <td className="px-5 py-4 text-right">
+                        <div className="inline-flex items-center gap-1.5">
+                          {w.integrations?.ga4 && <Link to={`/websites/${w.websiteId}?sync=GA4`} className="btn-secondary btn-sm text-2xs inline-flex items-center gap-1 py-1 px-2" title="Import GA4 data"><RefreshCw className="w-3 h-3" /><span>GA4</span></Link>}
+                          {w.integrations?.gsc && <Link to={`/websites/${w.websiteId}?sync=GSC`} className="btn-secondary btn-sm text-2xs inline-flex items-center gap-1 py-1 px-2" title="Import Search Console data"><RefreshCw className="w-3 h-3" /><span>GSC</span></Link>}
+                          {w.integrations?.clarity && <Link to={`/websites/${w.websiteId}?sync=CLARITY`} className="btn-secondary btn-sm text-2xs inline-flex items-center gap-1 py-1 px-2" title="Import Clarity data"><RefreshCw className="w-3 h-3" /><span>Clarity</span></Link>}
+                          <Link to={`/websites/${w.websiteId}`} className="btn-secondary btn-sm text-2xs inline-flex items-center gap-1 py-1 px-2"><span>Open</span><ArrowRight className="w-3 h-3" /></Link>
+                        </div>
                       </td>
                     </tr>
                   );

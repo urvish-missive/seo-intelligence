@@ -90,7 +90,6 @@ export class GA4DataService {
             { name: 'engagementRate' },
             { name: 'averageSessionDuration' },
             { name: 'bounceRate' },
-            { name: 'eventCount' },
             { name: 'conversions' },
             { name: 'screenPageViews' },
           ],
@@ -98,6 +97,22 @@ export class GA4DataService {
       });
 
       // ─── 1b. Organic Sessions Query ──────────────────────────────────────
+      apiCallsUsed++;
+      const eventCountResponse = await dataClient.properties.runReport({
+        property: propertyPath,
+        requestBody: {
+          dateRanges: [{ startDate: start, endDate: end }],
+          dimensions: [{ name: 'date' }],
+          metrics: [{ name: 'eventCount' }],
+        },
+      });
+      const eventCountByDate = new Map(
+        (eventCountResponse.data.rows || []).map((row) => [
+          formatGA4Date(row.dimensionValues[0]?.value),
+          parseInt(row.metricValues[0]?.value || '0', 10),
+        ])
+      );
+
       apiCallsUsed++;
       const organicResponse = await dataClient.properties.runReport({
         property: propertyPath,
@@ -147,9 +162,9 @@ export class GA4DataService {
             engagementRate: parseFloat(mv[5]?.value || '0'),
             avgEngagementTimeSec: parseFloat(mv[6]?.value || '0'),
             bounceRate: parseFloat(mv[7]?.value || '0'),
-            eventCount: parseInt(mv[8]?.value || '0', 10),
-            conversions: parseInt(mv[9]?.value || '0', 10),
-            screenPageViews: parseInt(mv[10]?.value || '0', 10),
+            eventCount: eventCountByDate.get(dateStr) || 0,
+            conversions: parseInt(mv[8]?.value || '0', 10),
+            screenPageViews: parseInt(mv[9]?.value || '0', 10),
             organicSessions: organicMap.get(dateStr) || 0,
           },
           create: {
@@ -163,9 +178,9 @@ export class GA4DataService {
             engagementRate: parseFloat(mv[5]?.value || '0'),
             avgEngagementTimeSec: parseFloat(mv[6]?.value || '0'),
             bounceRate: parseFloat(mv[7]?.value || '0'),
-            eventCount: parseInt(mv[8]?.value || '0', 10),
-            conversions: parseInt(mv[9]?.value || '0', 10),
-            screenPageViews: parseInt(mv[10]?.value || '0', 10),
+            eventCount: eventCountByDate.get(dateStr) || 0,
+            conversions: parseInt(mv[8]?.value || '0', 10),
+            screenPageViews: parseInt(mv[9]?.value || '0', 10),
             organicSessions: organicMap.get(dateStr) || 0,
           },
         });
@@ -349,6 +364,37 @@ export class GA4DataService {
       }
 
       // ─── Finalize Connection Status & Sync History ────────────────────────
+      apiCallsUsed++;
+      const countryResponse = await dataClient.properties.runReport({
+        property: propertyPath,
+        requestBody: {
+          dateRanges: [{ startDate: start, endDate: end }],
+          dimensions: [{ name: 'date' }, { name: 'country' }],
+          metrics: [{ name: 'sessions' }, { name: 'totalUsers' }, { name: 'conversions' }],
+          limit: 10000,
+        },
+      });
+      const countryRows = countryResponse.data.rows || [];
+      rowsFetched += countryRows.length;
+
+      for (const row of countryRows) {
+        const dateStr = formatGA4Date(row.dimensionValues[0]?.value);
+        const country = (row.dimensionValues[1]?.value || 'Unknown').substring(0, 100);
+        const metrics = row.metricValues || [];
+        const values = {
+          sessions: parseInt(metrics[0]?.value || '0', 10),
+          users: parseInt(metrics[1]?.value || '0', 10),
+          conversions: parseInt(metrics[2]?.value || '0', 10),
+        };
+
+        await prisma.gA4CountryMetric.upsert({
+          where: { websiteId_date_country: { websiteId, date: dateStr, country } },
+          update: values,
+          create: { websiteId, date: dateStr, country, ...values },
+        });
+        rowsInserted++;
+      }
+
       await prisma.integrationConnection.update({
         where: { id: connection.id },
         data: {

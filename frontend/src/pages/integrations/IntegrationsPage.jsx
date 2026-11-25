@@ -1,6 +1,6 @@
 // frontend/src/pages/integrations/IntegrationsPage.jsx
 import React, { useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { selectActiveWorkspace } from '../../features/auth/authSlice.js';
 import {
@@ -26,6 +26,8 @@ import {
   Zap,
   Clock,
   Key,
+  BarChart3,
+  Search,
 } from 'lucide-react';
 
 export default function IntegrationsPage() {
@@ -191,7 +193,43 @@ export default function IntegrationsPage() {
         </div>
       </div>
 
+      <div className="card p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-surface-900">Sync website data</h2>
+          <p className="text-xs text-surface-500 mt-1">Choose a website to import its connected GA4, Search Console, or Clarity data.</p>
+        </div>
+        <Link to="/websites" className="btn-primary inline-flex items-center justify-center gap-2 text-sm">
+          <RefreshCw className="w-4 h-4" />
+          <span>Open website sync</span>
+        </Link>
+      </div>
+
       {/* ─── SECTION 1: GOOGLE ACCOUNTS (GA4 & GSC) ────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <section className="card p-5 flex flex-col justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-lg bg-blue-50 text-blue-700 flex items-center justify-center"><BarChart3 className="w-5 h-5" /></div>
+            <div>
+              <div className="flex items-center gap-2"><h2 className="font-semibold text-surface-900">Google Analytics 4</h2><span className="text-2xs bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded font-mono">GA4</span></div>
+              <p className="mt-1 text-xs text-surface-500">Connect a GA4 property to a website for sessions, engagement, and conversion reporting.</p>
+              <p className="mt-2 text-xs text-surface-500">{googleAccounts.length > 0 ? `Google authorization available (${googleAccounts.length} account${googleAccounts.length === 1 ? '' : 's'}).` : 'Authorize a Google account first, then select a GA4 property.'} Enable the Google Analytics Admin API and Data API in Google Cloud.</p>
+            </div>
+          </div>
+          {googleAccounts.length > 0 ? <Link to="/websites" className="btn-secondary inline-flex items-center justify-center gap-2 text-sm"><span>Choose website and GA4 property</span><ExternalLink className="w-3.5 h-3.5" /></Link> : <button onClick={handleConnectGoogle} disabled={isGeneratingUrl} className="btn-primary text-sm">Authorize Google for GA4</button>}
+        </section>
+        <section className="card p-5 flex flex-col justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center"><Search className="w-5 h-5" /></div>
+            <div>
+              <div className="flex items-center gap-2"><h2 className="font-semibold text-surface-900">Google Search Console</h2><span className="text-2xs bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded font-mono">GSC</span></div>
+              <p className="mt-1 text-xs text-surface-500">Connect a verified Search Console site for clicks, impressions, queries, and rankings.</p>
+              <p className="mt-2 text-xs text-surface-500">{googleAccounts.length > 0 ? `Google authorization available (${googleAccounts.length} account${googleAccounts.length === 1 ? '' : 's'}).` : 'Authorize a Google account first, then select a verified Search Console site.'} Enable the Google Search Console API and grant the account access to the site.</p>
+            </div>
+          </div>
+          {googleAccounts.length > 0 ? <Link to="/websites" className="btn-secondary inline-flex items-center justify-center gap-2 text-sm"><span>Choose website and Search Console site</span><ExternalLink className="w-3.5 h-3.5" /></Link> : <button onClick={handleConnectGoogle} disabled={isGeneratingUrl} className="btn-primary text-sm">Authorize Google for Search Console</button>}
+        </section>
+      </div>
+
       <div className="card p-6">
         <div className="flex items-center justify-between pb-4 border-b border-surface-100 mb-6">
           <div className="flex items-center gap-2">

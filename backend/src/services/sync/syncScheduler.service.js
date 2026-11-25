@@ -33,6 +33,8 @@ export class SyncSchedulerService {
     cronTasks.clear();
 
     try {
+      await this.ensureDefaultSchedules();
+
       const activeSchedules = await prisma.syncSchedule.findMany({
         where: { enabled: true },
         include: {
@@ -46,15 +48,64 @@ export class SyncSchedulerService {
         this.registerCronTask(schedule);
       }
 
-      // Also register a universal fallback hourly check to run due schedules
-      const universalJob = cron.schedule('15 * * * *', () => {
-        this.runDueSchedules();
+      // Hourly: pick up newly connected integrations and run any overdue schedules
+      const universalJob = cron.schedule('15 * * * *', async () => {
+        const created = await this.ensureDefaultSchedules();
+        created.forEach((schedule) => this.registerCronTask(schedule));
+        await this.runDueSchedules();
       });
       cronTasks.set('universal_scheduler_check', universalJob);
 
       logger.info('Background sync scheduler successfully initialized.');
     } catch (err) {
       logger.warn(`Could not initialize sync scheduler: ${err.message}`);
+    }
+  }
+
+  /**
+   * Give every connected integration a daily schedule if it has none.
+   * Without one, nothing syncs automatically: GSC/GA4 go stale and Clarity
+   * (which only exports the last 1-3 days) never builds any history.
+   * Schedules a user has turned off are left alone.
+   *
+   * @returns {Promise<object[]>} schedules created now
+   */
+  async ensureDefaultSchedules() {
+    try {
+      const [connections, schedules] = await Promise.all([
+        prisma.integrationConnection.findMany({
+          where: { status: { in: ['CONNECTED', 'SYNCING'] } },
+          select: { id: true, websiteId: true, workspaceId: true, integrationType: true },
+        }),
+        prisma.syncSchedule.findMany({ select: { websiteId: true, provider: true } }),
+      ]);
+
+      const existing = new Set(schedules.map((s) => `${s.websiteId}:${s.provider}`));
+      const created = [];
+      for (const conn of connections) {
+        if (existing.has(`${conn.websiteId}:${conn.integrationType}`)) continue;
+        const schedule = await prisma.syncSchedule.create({
+          data: {
+            workspaceId: conn.workspaceId,
+            websiteId: conn.websiteId,
+            connectionId: conn.id,
+            provider: conn.integrationType,
+            enabled: true,
+            intervalMinutes: 1440, // daily at 02:00 UTC; Clarity imports the previous 24 hours
+            timezone: 'UTC',
+          },
+        });
+        existing.add(`${conn.websiteId}:${conn.integrationType}`);
+        created.push(schedule);
+      }
+
+      if (created.length) {
+        logger.info(`[SyncScheduler] Created ${created.length} default daily sync schedule(s)`);
+      }
+      return created;
+    } catch (err) {
+      logger.warn(`Could not create default sync schedules: ${err.message}`);
+      return [];
     }
   }
 
@@ -73,10 +124,14 @@ export class SyncSchedulerService {
       cronTasks.get(taskKey).stop();
     }
 
-    const task = cron.schedule(cronExpr, async () => {
-      logger.info(`[SyncScheduler] Triggering scheduled sync for ${schedule.provider} on website ${schedule.websiteId}`);
-      await this.executeScheduledSync(schedule.id);
-    });
+    const task = cron.schedule(
+      cronExpr,
+      async () => {
+        logger.info(`[SyncScheduler] Triggering scheduled sync for ${schedule.provider} on website ${schedule.websiteId}`);
+        await this.executeScheduledSync(schedule.id);
+      },
+      { timezone: schedule.timezone || 'UTC' }
+    );
 
     cronTasks.set(taskKey, task);
     logger.info(`Registered cron task [${cronExpr}] for schedule ${schedule.id} (${schedule.provider})`);

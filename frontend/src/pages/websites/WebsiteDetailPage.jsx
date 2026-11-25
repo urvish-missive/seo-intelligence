@@ -1,6 +1,6 @@
 // frontend/src/pages/websites/WebsiteDetailPage.jsx
-import React, { useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { selectActiveWorkspace } from '../../features/auth/authSlice.js';
 import { useGetWebsiteQuery } from '../../features/websites/websitesApi.js';
@@ -39,6 +39,7 @@ import {
 
 export default function WebsiteDetailPage() {
   const { websiteId } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const workspace = useSelector(selectActiveWorkspace);
 
   const [activeMainTab, setActiveMainTab] = useState('integrations'); // 'integrations' | 'analytics' | 'clarity'
@@ -67,6 +68,22 @@ export default function WebsiteDetailPage() {
 
   const website = websiteData?.data;
   const integrations = integrationsData?.data || [];
+  const clarityConn = integrations.find((i) => i.integrationType === 'CLARITY');
+
+  useEffect(() => {
+    const requestedSync = searchParams.get('sync');
+    if (!requestedSync || isLoadingIntegrations) return;
+    const normalized = requestedSync.toUpperCase();
+    if (normalized === 'GA4' || normalized === 'GSC') {
+      const connection = integrations.find((item) => item.integrationType === normalized);
+      if (connection?.selectedProperty && connection.status !== 'NOT_CONNECTED') {
+        handleOpenSync(normalized);
+      }
+    } else if (normalized === 'CLARITY' && clarityConn?.selectedProperty && clarityConn.status === 'CONNECTED') {
+      setClaritySyncModalOpen(true);
+    }
+    setSearchParams({}, { replace: true });
+  }, [searchParams, setSearchParams, isLoadingIntegrations, integrations, clarityConn]);
 
   const handleOpenConnect = (type) => {
     setSelectedIntegrationType(type);
@@ -129,7 +146,8 @@ export default function WebsiteDetailPage() {
 
   const ga4Conn = integrations.find((i) => i.integrationType === 'GA4');
   const gscConn = integrations.find((i) => i.integrationType === 'GSC');
-  const clarityConn = integrations.find((i) => i.integrationType === 'CLARITY');
+  const ga4IsMapped = Boolean(ga4Conn?.selectedProperty && ga4Conn.status !== 'NOT_CONNECTED');
+  const gscIsMapped = Boolean(gscConn?.selectedProperty && gscConn.status !== 'NOT_CONNECTED');
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
@@ -297,8 +315,10 @@ export default function WebsiteDetailPage() {
                     </span>
                     <span
                       className={`text-2xs px-2 py-0.5 rounded-full font-semibold ${
-                        ga4Conn?.status === 'CONNECTED'
+                        ga4IsMapped && ga4Conn.status !== 'FAILED'
                           ? 'bg-emerald-100 text-emerald-800'
+                          : ga4Conn?.status === 'FAILED'
+                          ? 'bg-rose-100 text-rose-800'
                           : 'bg-surface-200 text-surface-600'
                       }`}
                     >
@@ -307,7 +327,7 @@ export default function WebsiteDetailPage() {
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {ga4Conn?.status === 'CONNECTED' ? (
+                    {ga4IsMapped ? (
                       <>
                         <button
                           onClick={() => handleOpenSync('GA4')}
@@ -345,7 +365,7 @@ export default function WebsiteDetailPage() {
                   User acquisition, session engagement, bounce rates, conversions, and traffic channels.
                 </p>
 
-                {ga4Conn?.status === 'CONNECTED' && (
+                {ga4IsMapped && (
                   <div className="p-2.5 rounded-lg bg-surface-100 text-xs text-surface-700 flex flex-wrap items-center gap-4">
                     <div>
                       Account: <strong>{ga4Conn.googleAccount?.email || 'Connected Account'}</strong>
@@ -372,8 +392,10 @@ export default function WebsiteDetailPage() {
                     </span>
                     <span
                       className={`text-2xs px-2 py-0.5 rounded-full font-semibold ${
-                        gscConn?.status === 'CONNECTED'
+                        gscIsMapped && gscConn.status !== 'FAILED'
                           ? 'bg-emerald-100 text-emerald-800'
+                          : gscConn?.status === 'FAILED'
+                          ? 'bg-rose-100 text-rose-800'
                           : 'bg-surface-200 text-surface-600'
                       }`}
                     >
@@ -382,7 +404,7 @@ export default function WebsiteDetailPage() {
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {gscConn?.status === 'CONNECTED' ? (
+                    {gscIsMapped ? (
                       <>
                         <button
                           onClick={() => handleOpenSync('GSC')}
@@ -420,7 +442,7 @@ export default function WebsiteDetailPage() {
                   Organic search queries, keyword clicks, impressions, CTR, and average SERP rankings.
                 </p>
 
-                {gscConn?.status === 'CONNECTED' && (
+                {gscIsMapped && (
                   <div className="p-2.5 rounded-lg bg-surface-100 text-xs text-surface-700 flex flex-wrap items-center gap-4">
                     <div>
                       Account: <strong>{gscConn.googleAccount?.email || 'Connected Account'}</strong>

@@ -12,6 +12,7 @@ import {
   Info,
   Clock,
   Users,
+  FileText,
 } from 'lucide-react';
 import MetricKpiCard from './MetricKpiCard.jsx';
 import BarBreakdownChart from './BarBreakdownChart.jsx';
@@ -39,7 +40,9 @@ export default function ClarityDashboardView({ workspaceId, websiteId, dateRange
   const deviceBreakdown = data.deviceBreakdown || [];
   const dailyTrend = data.dailyTrend || [];
   const lastImport = data.reportingWindow?.lastImportAt;
-  const daysWithData = data.daysWithData || 0;
+  const coverage = data.coverage;
+  const fmtWhen = (d) =>
+    new Date(d).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
   return (
     <div className={`space-y-6 ${isFetching ? 'opacity-70 transition-opacity' : ''}`}>
@@ -49,18 +52,30 @@ export default function ClarityDashboardView({ workspaceId, websiteId, dateRange
           <span>How Clarity history works</span>
         </div>
         <p className="text-amber-800">
-          Microsoft Clarity only exports the last 1–3 days, so history here builds up from the daily sync.
-          {' '}
-          {daysWithData > 0
-            ? `This period has ${daysWithData} day${daysWithData === 1 ? '' : 's'} of Clarity data.`
-            : 'No Clarity data has been imported for this period yet.'}
+          {coverage ? (
+            <>
+              These numbers cover <span className="font-semibold">{fmtWhen(coverage.from)} – {fmtWhen(coverage.to)}</span>
+              {coverage.imports > 1 ? ` (${coverage.imports} imports)` : ''}. Compare them with Clarity&apos;s own dashboard set to the same
+              window. Clarity only exports the last 1–3 days, so longer history builds up from the daily sync.
+            </>
+          ) : (
+            'No Clarity import covers this period yet. Clarity only exports the last 1–3 days, so run a sync to fetch recent data; history then builds up from the daily sync.'
+          )}
           {lastImport && ` Last import: ${new Date(lastImport).toLocaleString()}.`}
         </p>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <MetricKpiCard title="Sessions" value={f.totalSessions} icon={MousePointer} iconColor="blue" compareEnabled={false} subtitle="Recorded by Clarity" />
-        <MetricKpiCard title="Distinct Users" value={f.distinctUsers} icon={Users} iconColor="purple" compareEnabled={false} />
+        <MetricKpiCard
+          title="Sessions"
+          value={f.totalSessions}
+          icon={MousePointer}
+          iconColor="blue"
+          compareEnabled={false}
+          subtitle={f.botSessions ? `${Number(f.botSessions).toLocaleString()} bot sessions excluded` : 'Recorded by Clarity'}
+        />
+        <MetricKpiCard title="Unique Users" value={f.distinctUsers} icon={Users} iconColor="purple" compareEnabled={false} />
+        <MetricKpiCard title="Pages per Session" value={f.pagesPerSession} format="decimal" icon={FileText} iconColor="blue" compareEnabled={false} subtitle="average" />
         <MetricKpiCard
           title="Dead Clicks"
           value={f.deadClickCount}
@@ -101,7 +116,15 @@ export default function ClarityDashboardView({ workspaceId, websiteId, dateRange
           tooltip="Rapid up-and-down scrolling while searching for content."
         />
         <MetricKpiCard title="Avg Scroll Depth" value={f.avgScrollDepth} format="percent" icon={Layers} iconColor="emerald" compareEnabled={false} />
-        <MetricKpiCard title="Avg Active Time" value={f.avgTimeOnPageSec} format="duration" icon={Clock} iconColor="blue" compareEnabled={false} />
+        <MetricKpiCard
+          title="Active Time Spent"
+          value={f.avgTimeOnPageSec}
+          format="duration"
+          icon={Clock}
+          iconColor="blue"
+          compareEnabled={false}
+          subtitle={f.totalTimeSec ? `out of ${(f.totalTimeSec / 60).toFixed(1)} min total time` : undefined}
+        />
         <MetricKpiCard
           title="Script Errors"
           value={f.scriptErrorCount}
