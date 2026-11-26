@@ -230,6 +230,20 @@ export const analyticsApi = baseApi.injectEndpoints({
         `/workspaces/${workspaceId}/websites/${websiteId}/analytics/clarity/summary${buildQs({ startDate, endDate })}`,
       providesTags: ['WebsiteAnalytics'],
     }),
+
+    // Charts page: which metrics each source/segment offers
+    getChartCatalogue: builder.query({
+      query: (workspaceId) => `/workspaces/${workspaceId}/analytics/charts/catalogue`,
+    }),
+
+    // Charts page: month-by-month series for one source + metric
+    getMonthlyChart: builder.query({
+      query: ({ workspaceId, websiteId, source, metric, segment, segmentValue, startDate, endDate }) =>
+        `/workspaces/${workspaceId}/websites/${websiteId}/analytics/charts/monthly${buildQs({
+          source, metric, segment, segmentValue, startDate, endDate,
+        })}`,
+      providesTags: ['WebsiteAnalytics'],
+    }),
   }),
   overrideExisting: false,
 });
@@ -247,4 +261,6 @@ export const {
   useGetGSCBreakdownQuery,
   useGetGSCOpportunitiesQuery,
   useGetClaritySummaryQuery,
+  useGetChartCatalogueQuery,
+  useGetMonthlyChartQuery,
 } = analyticsApi;

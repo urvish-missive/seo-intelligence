@@ -8,6 +8,7 @@ import {
   Users,
   ShieldCheck,
   BarChart3,
+  BarChart4,
   Search,
   Sparkles,
   FileText,
@@ -24,6 +25,7 @@ export default function Sidebar({ isOpen = false, onClose }) {
 
   const mainNavigation = [
     { name: 'Overview', href: '/', icon: LayoutDashboard },
+    { name: 'Monthly Charts', href: '/charts', icon: BarChart4 },
     { name: 'Clients', href: '/clients', icon: Building2 },
     { name: 'Websites', href: '/websites', icon: Globe },
     { name: 'AI Assistant', href: '/ai-assistant', icon: Sparkles },

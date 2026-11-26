@@ -4,6 +4,7 @@
 import analyticsDataService from './analyticsData.service.js';
 import { reportDataAggregatorService } from '../reports/services/report-data-aggregator.service.js';
 import { BadRequestError } from '../../middleware/errorHandler.js';
+import { monthlyChartService, getChartCatalogue } from './monthlyChart.service.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -216,6 +217,31 @@ export class AnalyticsController {
 
       const result = await analyticsDataService.getClaritySummary(workspaceId, websiteId, readDateRange(req.query));
 
+      res.json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  getChartCatalogue(req, res, next) {
+    try {
+      res.json({ success: true, data: getChartCatalogue() });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async getMonthlyChart(req, res, next) {
+    try {
+      const { workspaceId, websiteId } = req.params;
+      const { source, metric, segment, segmentValue } = req.query;
+      const result = await monthlyChartService.getMonthlySeries(workspaceId, websiteId, {
+        source,
+        metric,
+        segment,
+        segmentValue,
+        ...readDateRange(req.query),
+      });
       res.json({ success: true, data: result });
     } catch (err) {
       next(err);

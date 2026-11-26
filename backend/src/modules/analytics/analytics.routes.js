@@ -90,4 +90,17 @@ router.get(
   (req, res, next) => analyticsController.getClaritySummary(req, res, next)
 );
 
+// Month-by-month chart series (one source + metric at a time)
+router.get(
+  '/workspaces/:workspaceId/analytics/charts/catalogue',
+  requirePermission('websites.view'),
+  (req, res, next) => analyticsController.getChartCatalogue(req, res, next)
+);
+
+router.get(
+  '/workspaces/:workspaceId/websites/:websiteId/analytics/charts/monthly',
+  requirePermission('websites.view'),
+  (req, res, next) => analyticsController.getMonthlyChart(req, res, next)
+);
+
 export default router;
