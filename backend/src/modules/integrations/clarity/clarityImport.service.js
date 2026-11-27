@@ -52,12 +52,6 @@ export const CLARITY_REPORT_PRESETS = {
 
 const WRITE_BATCH_SIZE = 200;
 
-/**
- * Returns current UTC date formatted as YYYY-MM-DD.
- */
-function getCurrentUtcDateString() {
-  return new Date().toISOString().split('T')[0];
-}
 
 const normaliseKey = (key) => String(key || '').toLowerCase().replace(/[\s_/\-]/g, '');
 
@@ -231,7 +225,10 @@ export class ClarityImportService {
     const startTime = Date.now();
     const windowEnd = new Date();
     const windowStart = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-    const dateStr = getCurrentUtcDateString();
+    // Store the window under the UTC day its midpoint falls on. The export is a
+    // rolling "last N x 24 hours", so a 02:00 UTC daily run is almost entirely
+    // yesterday: labelling it with today's date shifted every day by one.
+    const dateStr = new Date((windowStart.getTime() + windowEnd.getTime()) / 2).toISOString().split('T')[0];
 
     try {
       // 4. Decrypt API token in memory

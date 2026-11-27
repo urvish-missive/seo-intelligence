@@ -8,6 +8,14 @@ import { syncOrchestratorService } from './syncOrchestrator.service.js';
 import logger from '../../utils/logger.js';
 
 let cronTasks = new Map();
+const runningSchedules = new Set();
+
+const STARTUP_CATCHUP_DELAY_MS = 60 * 1000;
+// A run counts as "done for this interval" if it happened within the interval
+// minus this slack, so the 02:00 cron and the hourly check don't both fire.
+const DUE_SLACK_MS = 30 * 60 * 1000;
+// After a failure, try again in about this long instead of waiting a full day
+const RETRY_AFTER_FAILURE_MS = 2 * 60 * 60 * 1000;
 
 /**
  * Convert interval in minutes into a standard cron expression.
@@ -55,6 +63,12 @@ export class SyncSchedulerService {
         await this.runDueSchedules();
       });
       cronTasks.set('universal_scheduler_check', universalJob);
+
+      // Catch up shortly after start-up: the fixed 02:00 UTC run is missed
+      // whenever the server is down or asleep at that minute.
+      const startupTimer = setTimeout(() => this.runDueSchedules(), STARTUP_CATCHUP_DELAY_MS);
+      startupTimer.unref?.();
+      cronTasks.set('startup_catchup', { stop: () => clearTimeout(startupTimer) });
 
       logger.info('Background sync scheduler successfully initialized.');
     } catch (err) {
@@ -141,54 +155,107 @@ export class SyncSchedulerService {
    * Execute an automated scheduled sync.
    */
   async executeScheduledSync(scheduleId) {
-    const schedule = await prisma.syncSchedule.findUnique({
-      where: { id: scheduleId },
-    });
-
-    if (!schedule || !schedule.enabled) return;
+    // Guard against the 02:00 cron and the hourly catch-up firing together
+    if (runningSchedules.has(scheduleId)) return;
+    runningSchedules.add(scheduleId);
 
     try {
-      await syncOrchestratorService.triggerSync({
-        workspaceId: schedule.workspaceId,
-        websiteId: schedule.websiteId,
-        provider: schedule.provider,
-        jobType: 'SCHEDULED',
-        user: { id: 'automated-scheduler', email: 'system@missive.internal' },
+      const schedule = await prisma.syncSchedule.findUnique({
+        where: { id: scheduleId },
       });
+      if (!schedule || !schedule.enabled) return;
+      if (!this.isDue(schedule) && !(await this.lastRunFailed(schedule))) {
+        logger.info(`[SyncScheduler] ${schedule.provider} for website ${schedule.websiteId} already ran at ${schedule.lastRunAt.toISOString()}; skipping`);
+        return;
+      }
 
-      await prisma.syncSchedule.update({
-        where: { id: scheduleId },
-        data: {
-          lastRunAt: new Date(),
-          lastStatus: 'COMPLETED',
-        },
-      });
-    } catch (err) {
-      logger.error(`[SyncScheduler] Scheduled sync failed for ${schedule.provider}: ${err.message}`);
-      await prisma.syncSchedule.update({
-        where: { id: scheduleId },
-        data: {
-          lastRunAt: new Date(),
-          lastStatus: 'FAILED',
-        },
-      }).catch(() => {});
+      const intervalMs = (schedule.intervalMinutes || 1440) * 60 * 1000;
+      const startedAt = new Date();
+      try {
+        await syncOrchestratorService.triggerSync({
+          workspaceId: schedule.workspaceId,
+          websiteId: schedule.websiteId,
+          provider: schedule.provider,
+          jobType: 'SCHEDULED',
+          // Clarity: always the last 24 hours, one stored day per run
+          numOfDays: 1,
+          user: { id: 'automated-scheduler', email: 'system@missive.internal' },
+        });
+
+        await prisma.syncSchedule.update({
+          where: { id: scheduleId },
+          data: {
+            lastRunAt: startedAt,
+            nextRunAt: new Date(startedAt.getTime() + intervalMs),
+            // The job itself runs in the background; its own SyncJob row records the result
+            lastStatus: 'PENDING',
+          },
+        });
+        logger.info(`[SyncScheduler] Started scheduled ${schedule.provider} sync for website ${schedule.websiteId}`);
+      } catch (err) {
+        logger.error(`[SyncScheduler] Scheduled sync failed for ${schedule.provider}: ${err.message}`);
+        // Record the attempt but make it due again in ~2 hours, so one bad
+        // moment (network, token refresh) doesn't cost a whole day of data.
+        const retryAt = new Date(startedAt.getTime() + RETRY_AFTER_FAILURE_MS);
+        await prisma.syncSchedule
+          .update({
+            where: { id: scheduleId },
+            data: {
+              lastRunAt: new Date(retryAt.getTime() - intervalMs + DUE_SLACK_MS),
+              nextRunAt: retryAt,
+              lastStatus: 'FAILED',
+            },
+          })
+          .catch(() => {});
+      }
+    } finally {
+      runningSchedules.delete(scheduleId);
     }
   }
 
   /**
-   * Check for any enabled schedules whose nextRunAt has passed.
+   * True when the background job started by the last scheduled run failed, or
+   * has been stuck for over an hour (e.g. the server restarted mid-sync), and
+   * that run was at least RETRY_AFTER_FAILURE_MS ago. Lets a bad run be
+   * retried the same day instead of costing a day of Clarity data.
+   */
+  async lastRunFailed(schedule, now = Date.now()) {
+    if (!schedule.lastRunAt) return false;
+    const lastRun = new Date(schedule.lastRunAt).getTime();
+    if (now - lastRun < RETRY_AFTER_FAILURE_MS) return false;
+
+    const job = await prisma.syncJob.findFirst({
+      where: { websiteId: schedule.websiteId, provider: schedule.provider, createdAt: { gte: new Date(lastRun - 60 * 1000) } },
+      orderBy: { createdAt: 'desc' },
+      select: { status: true, updatedAt: true },
+    });
+    if (!job) return false;
+    if (job.status === 'FAILED') return true;
+    const stuck = ['PENDING', 'PROCESSING'].includes(job.status) && now - new Date(job.updatedAt).getTime() > 60 * 60 * 1000;
+    return stuck;
+  }
+
+  /** True when a schedule hasn't run within its interval (missed runs included). */
+  isDue(schedule, now = Date.now()) {
+    if (!schedule.lastRunAt) return true;
+    const intervalMs = (schedule.intervalMinutes || 1440) * 60 * 1000;
+    return now - new Date(schedule.lastRunAt).getTime() >= intervalMs - DUE_SLACK_MS;
+  }
+
+  /**
+   * Run every enabled schedule that is overdue: never run, or last run longer
+   * ago than its interval. Called hourly and once shortly after start-up, so a
+   * missed 02:00 run is caught up as soon as the server is back.
    */
   async runDueSchedules() {
     try {
-      const now = new Date();
-      const dueSchedules = await prisma.syncSchedule.findMany({
-        where: {
-          enabled: true,
-          nextRunAt: { lte: now },
-        },
-      });
-
-      for (const schedule of dueSchedules) {
+      const schedules = await prisma.syncSchedule.findMany({ where: { enabled: true } });
+      const due = [];
+      for (const s of schedules) {
+        if (this.isDue(s) || (await this.lastRunFailed(s))) due.push(s);
+      }
+      if (due.length) logger.info(`[SyncScheduler] Catching up ${due.length} overdue schedule(s)`);
+      for (const schedule of due) {
         await this.executeScheduledSync(schedule.id);
       }
     } catch (err) {

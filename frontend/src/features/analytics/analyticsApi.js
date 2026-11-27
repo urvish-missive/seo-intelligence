@@ -238,6 +238,35 @@ export const analyticsApi = baseApi.injectEndpoints({
       providesTags: ['WebsiteAnalytics'],
     }),
 
+    // Clarity history: bulk upload of monthly dashboard CSV downloads
+    previewClarityCsv: builder.mutation({
+      query: ({ workspaceId, websiteId, files }) => ({
+        url: `/workspaces/${workspaceId}/websites/${websiteId}/integrations/clarity/csv/preview`,
+        method: 'POST',
+        body: { files },
+      }),
+    }),
+    importClarityCsv: builder.mutation({
+      query: ({ workspaceId, websiteId, files }) => ({
+        url: `/workspaces/${workspaceId}/websites/${websiteId}/integrations/clarity/csv/import`,
+        method: 'POST',
+        body: { files },
+      }),
+      invalidatesTags: ['WebsiteAnalytics', 'ClarityCsvImports'],
+    }),
+    getClarityCsvImports: builder.query({
+      query: ({ workspaceId, websiteId }) =>
+        `/workspaces/${workspaceId}/websites/${websiteId}/integrations/clarity/csv/imports`,
+      providesTags: ['ClarityCsvImports'],
+    }),
+    deleteClarityCsvImport: builder.mutation({
+      query: ({ workspaceId, websiteId, importId }) => ({
+        url: `/workspaces/${workspaceId}/websites/${websiteId}/integrations/clarity/csv/imports/${importId}`,
+        method: 'DELETE',
+      }),
+      invalidatesTags: ['WebsiteAnalytics', 'ClarityCsvImports'],
+    }),
+
     // Charts page: which metrics each source/segment offers
     getChartCatalogue: builder.query({
       query: (workspaceId) => `/workspaces/${workspaceId}/analytics/charts/catalogue`,
@@ -271,4 +300,8 @@ export const {
   useGetChartCatalogueQuery,
   useGetMonthlyChartQuery,
   useGetInsightsQuery,
+  usePreviewClarityCsvMutation,
+  useImportClarityCsvMutation,
+  useGetClarityCsvImportsQuery,
+  useDeleteClarityCsvImportMutation,
 } = analyticsApi;

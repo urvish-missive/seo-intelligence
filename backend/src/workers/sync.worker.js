@@ -2,7 +2,7 @@
 // BullMQ Worker for processing Google Analytics 4, Google Search Console, and Microsoft Clarity sync jobs.
 // Handles concurrency controls, exponential backoff, error classification, checkpoints, and graceful shutdown.
 
-import { Worker } from 'bullmq';
+import { Worker, DelayedError } from 'bullmq';
 import { SYNC_QUEUE_NAME, getBullMQConnection } from '../queues/queue.config.js';
 import { syncLockService } from '../services/sync/syncLock.service.js';
 import { ga4DataService } from '../modules/integrations/ga4/ga4Data.service.js';
@@ -12,12 +12,17 @@ import { addAnalysisJob } from '../modules/seo-analysis/queues/seo-analysis.queu
 import prisma from '../config/database.js';
 import logger from '../utils/logger.js';
 
+// When another sync holds the lock: wait this long, up to this many times
+// (10 x 1 min outlasts the 5-minute lock left behind by a crash or restart).
+const LOCK_RETRY_DELAY_MS = 60 * 1000;
+const MAX_LOCK_DEFERRALS = 10;
+
 let syncWorker = null;
 
 /**
  * Execute provider-specific synchronisation.
  */
-async function processSyncJob(job) {
+async function processSyncJob(job, token) {
   const {
     syncJobId,
     workspaceId,
@@ -34,8 +39,30 @@ async function processSyncJob(job) {
   // 1. Acquire distributed lock to prevent duplicate concurrent runs
   const lock = await syncLockService.acquireLock(websiteId, provider);
   if (!lock.acquired) {
+    // The lock may belong to a sync that is still running, or be left over
+    // from a server restart mid-sync (it expires after 5 minutes). Wait and
+    // try again rather than using up the job's retries within seconds.
+    const deferrals = (job.data.lockDeferrals || 0) + 1;
+    if (deferrals <= MAX_LOCK_DEFERRALS && token) {
+      logger.warn(
+        `[SyncWorker] ${provider} sync for website ${websiteId} is locked; retrying in ${LOCK_RETRY_DELAY_MS / 1000}s (${deferrals}/${MAX_LOCK_DEFERRALS})`
+      );
+      await job.updateData({ ...job.data, lockDeferrals: deferrals });
+      if (syncJobId) {
+        await prisma.syncJob
+          .update({ where: { id: syncJobId }, data: { status: 'PENDING' } })
+          .catch(() => {});
+      }
+      await job.moveToDelayed(Date.now() + LOCK_RETRY_DELAY_MS, token);
+      throw new DelayedError();
+    }
     const msg = `Job deferred: another sync is actively running for website ${websiteId} and provider ${provider}`;
     logger.warn(`[SyncWorker] ${msg}`);
+    if (syncJobId) {
+      await prisma.syncJob
+        .update({ where: { id: syncJobId }, data: { status: 'FAILED', completedAt: new Date(), error: msg } })
+        .catch(() => {});
+    }
     throw new Error(msg);
   }
 

@@ -3,6 +3,7 @@
 
 import { Router } from 'express';
 import * as controller from './clarity.controller.js';
+import { clarityCsvService } from './clarityCsv.service.js';
 import { authenticate } from '../../../middleware/authenticate.js';
 import { requirePermission } from '../../../middleware/requirePermission.js';
 import { requireWorkspaceAccess } from '../../../middleware/tenantIsolation.js';
@@ -110,6 +111,48 @@ router.get(
   requireWorkspaceAccess,
   requirePermission('websites.view'),
   controller.getClarityOverview
+);
+
+// ─── Clarity history: monthly dashboard CSV upload ─────────────────────
+const csvBase = '/workspaces/:workspaceId/websites/:websiteId/integrations/clarity/csv';
+const wrap = (fn) => async (req, res, next) => {
+  try {
+    res.json({ success: true, data: await fn(req) });
+  } catch (err) {
+    next(err);
+  }
+};
+
+router.post(
+  `${csvBase}/preview`,
+  authenticate,
+  requireWorkspaceAccess,
+  requirePermission('integrations.manage'),
+  wrap((req) => clarityCsvService.preview(req.params.workspaceId, req.params.websiteId, req.body?.files))
+);
+
+router.post(
+  `${csvBase}/import`,
+  authenticate,
+  requireWorkspaceAccess,
+  requirePermission('integrations.manage'),
+  wrap((req) => clarityCsvService.import(req.params.workspaceId, req.params.websiteId, req.body?.files, req.user))
+);
+
+router.get(
+  `${csvBase}/imports`,
+  authenticate,
+  requireWorkspaceAccess,
+  requirePermission('websites.view'),
+  wrap((req) => clarityCsvService.list(req.params.workspaceId, req.params.websiteId))
+);
+
+router.delete(
+  `${csvBase}/imports/:importId`,
+  authenticate,
+  requireWorkspaceAccess,
+  requirePermission('integrations.manage'),
+  wrap((req) => clarityCsvService.remove(req.params.workspaceId, req.params.websiteId, req.params.importId))
 );
 
 export default router;

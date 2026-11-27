@@ -83,6 +83,7 @@ export const baseApi = createApi({
     'WebsiteAnalytics',
     'ClarityConnections',
     'ClaritySnapshots',
+    'ClarityCsvImports',
     'SyncStatus',
     'SyncSchedules',
     'SyncJobs',

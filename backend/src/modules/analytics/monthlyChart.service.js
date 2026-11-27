@@ -15,6 +15,7 @@ import prisma from '../../config/database.js';
 import { BadRequestError, NotFoundError } from '../../middleware/errorHandler.js';
 import GoogleClientFactory from '../integrations/google/googleClient.factory.js';
 import logger from '../../utils/logger.js';
+import { clarityCsvService } from '../integrations/clarity/clarityCsv.service.js';
 
 // ─── Metric catalogue ──────────────────────────────────────────────────────
 // agg: 'sum' adds daily values; 'weighted' averages them weighted by `weight`;
@@ -286,6 +287,27 @@ export class MonthlyChartService {
       };
     });
 
+    // Clarity history imported from dashboard CSVs: Clarity's own whole-month
+    // figures. Used for months the daily sync doesn't fully cover, and only
+    // when the selected range includes the whole month.
+    let csvMonths = 0;
+    if (source === 'clarity' && segment === 'none') {
+      const csv = await clarityCsvService.monthlyMetrics(websiteId, startDate, endDate).catch(() => new Map());
+      for (const point of series) {
+        const m = csv.get(point.month);
+        const v = m?.[metricKey];
+        if (v === undefined || v === null) continue;
+        const wholeMonthInRange = point.expectedDays === daysInMonth(point.month);
+        const dailyComplete = point.daysWithData >= point.expectedDays;
+        if (!wholeMonthInRange || dailyComplete) continue;
+        point.value = v;
+        point.source = 'csv';
+        point.daysWithData = point.expectedDays;
+        point.partial = false;
+        csvMonths += 1;
+      }
+    }
+
     // Unique users per month: ask GA4 directly instead of summing daily users
     let usersMethod = null;
     if (metric.users) {
@@ -332,6 +354,7 @@ export class MonthlyChartService {
       unit: metric.unit || null,
       lowerIsBetter: !!metric.lowerIsBetter,
       usersMethod,
+      csvMonths,
       startDate,
       endDate,
       series,

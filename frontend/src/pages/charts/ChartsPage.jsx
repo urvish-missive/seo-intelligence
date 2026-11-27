@@ -18,7 +18,8 @@ import {
   ResponsiveContainer,
   Cell,
 } from 'recharts';
-import { BarChart4, Info, AlertTriangle, ArrowUpRight, ArrowDownRight, Minus, Download, Loader2 } from 'lucide-react';
+import { BarChart4, Info, AlertTriangle, ArrowUpRight, ArrowDownRight, Minus, Download, Loader2, Upload } from 'lucide-react';
+import ClarityCsvImportModal from '../../features/integrations/components/ClarityCsvImportModal.jsx';
 import { selectActiveWorkspace } from '../../features/auth/authSlice.js';
 import { useGetWebsitesQuery } from '../../features/websites/websitesApi.js';
 import { useGetChartCatalogueQuery, useGetMonthlyChartQuery } from '../../features/analytics/analyticsApi.js';
@@ -221,6 +222,7 @@ export default function ChartsPage() {
   const [segmentValue, setSegmentValue] = useState('');
   const [metric, setMetric] = useState(saved.metric || 'totalUsers');
   const [preset, setPreset] = useState(saved.preset || '12m');
+  const [clarityImportOpen, setClarityImportOpen] = useState(false);
   // Never open on empty custom months: fall back to the last 12 months
   const savedCustomOk = !customRangeError(saved.customFrom, saved.customTo);
   const [customFrom, setCustomFrom] = useState(savedCustomOk ? saved.customFrom : rangeFor('12m').startDate.slice(0, 7));
@@ -406,11 +408,31 @@ export default function ChartsPage() {
             Month-by-month performance from one tool at a time. Numbers from different tools are never added together.
           </p>
         </div>
-        <button type="button" className="btn btn-secondary btn-sm" onClick={exportCsv} disabled={!hasData}>
-          <Download className="w-4 h-4" />
-          Export CSV
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => setClarityImportOpen(true)}
+            disabled={!websiteId}
+            title="Upload monthly CSV downloads from the Clarity dashboard"
+          >
+            <Upload className="w-4 h-4" />
+            Import Clarity history
+          </button>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={exportCsv} disabled={!hasData}>
+            <Download className="w-4 h-4" />
+            Export CSV
+          </button>
+        </div>
       </div>
+
+      <ClarityCsvImportModal
+        isOpen={clarityImportOpen}
+        onClose={() => setClarityImportOpen(false)}
+        workspaceId={workspaceId}
+        websiteId={websiteId}
+        websiteName={websites.find((w) => w.id === websiteId)?.name}
+      />
 
       {/* Filters */}
       <div className="card p-5 space-y-4">
@@ -553,6 +575,14 @@ export default function ChartsPage() {
           <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
           These bars add up daily user counts, so a visitor who comes on 5 days counts 5 times. Read them as a trend, not as
           unique visitors.
+          {chart.meta.csvMonths > 0 && ' Months marked "CSV" use Clarity’s own monthly figures from an imported dashboard download.'}
+        </div>
+      )}
+      {mode === 'single' && chart?.meta?.csvMonths > 0 && chart.meta.usersMethod !== 'sum_of_daily' && (
+        <div className="flex gap-2 text-xs text-surface-600 bg-brand-50 border border-brand-100 rounded-lg p-3">
+          <Info className="w-4 h-4 text-brand-600 flex-shrink-0 mt-0.5" />
+          {chart.meta.csvMonths} month{chart.meta.csvMonths === 1 ? '' : 's'} marked &quot;CSV&quot; come from Clarity dashboard
+          downloads you imported.
         </div>
       )}
       {mode === 'compare' && (
@@ -715,6 +745,11 @@ export default function ChartsPage() {
                     <td className="px-5 py-2.5 text-surface-800">
                       {r.fullLabel}
                       {r.partial && <span className="badge-yellow ml-2">Partial</span>}
+                      {r.source === 'csv' && (
+                        <span className="badge-blue ml-2" title="From an imported Clarity dashboard CSV">
+                          CSV
+                        </span>
+                      )}
                     </td>
                     <td className="px-5 py-2.5 text-right tabular-nums font-medium">{formatValue(r.value, unit)}</td>
                     <td className="px-5 py-2.5 text-right text-xs">
