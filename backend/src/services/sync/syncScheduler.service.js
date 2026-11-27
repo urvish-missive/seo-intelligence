@@ -11,6 +11,7 @@ let cronTasks = new Map();
 const runningSchedules = new Set();
 
 const STARTUP_CATCHUP_DELAY_MS = 60 * 1000;
+const DEFAULT_INTERVAL_MINUTES = 720; // every 12 hours
 // A run counts as "done for this interval" if it happened within the interval
 // minus this slack, so the 02:00 cron and the hourly check don't both fire.
 const DUE_SLACK_MS = 30 * 60 * 1000;
@@ -105,7 +106,9 @@ export class SyncSchedulerService {
             connectionId: conn.id,
             provider: conn.integrationType,
             enabled: true,
-            intervalMinutes: 1440, // daily at 02:00 UTC; Clarity imports the previous 24 hours
+            // Twice a day: on a PC that is only on part of the day this still
+            // syncs at least once per working session (Clarity: 2 of its 10 daily calls)
+            intervalMinutes: DEFAULT_INTERVAL_MINUTES,
             timezone: 'UTC',
           },
         });
@@ -169,7 +172,7 @@ export class SyncSchedulerService {
         return;
       }
 
-      const intervalMs = (schedule.intervalMinutes || 1440) * 60 * 1000;
+      const intervalMs = (schedule.intervalMinutes || DEFAULT_INTERVAL_MINUTES) * 60 * 1000;
       const startedAt = new Date();
       try {
         await syncOrchestratorService.triggerSync({
@@ -238,7 +241,7 @@ export class SyncSchedulerService {
   /** True when a schedule hasn't run within its interval (missed runs included). */
   isDue(schedule, now = Date.now()) {
     if (!schedule.lastRunAt) return true;
-    const intervalMs = (schedule.intervalMinutes || 1440) * 60 * 1000;
+    const intervalMs = (schedule.intervalMinutes || DEFAULT_INTERVAL_MINUTES) * 60 * 1000;
     return now - new Date(schedule.lastRunAt).getTime() >= intervalMs - DUE_SLACK_MS;
   }
 
@@ -271,7 +274,7 @@ export class SyncSchedulerService {
     websiteId,
     provider,
     enabled,
-    intervalMinutes = 1440,
+    intervalMinutes = DEFAULT_INTERVAL_MINUTES,
     cronExpression,
     user,
   }) {

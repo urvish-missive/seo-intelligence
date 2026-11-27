@@ -18,7 +18,7 @@ import {
   ResponsiveContainer,
   Cell,
 } from 'recharts';
-import { BarChart4, Info, AlertTriangle, ArrowUpRight, ArrowDownRight, Minus, Download, Loader2, Upload } from 'lucide-react';
+import { BarChart4, Info, AlertTriangle, ArrowUpRight, ArrowDownRight, Minus, Download, Loader2, Upload, Plus, X } from 'lucide-react';
 import ClarityCsvImportModal from '../../features/integrations/components/ClarityCsvImportModal.jsx';
 import { selectActiveWorkspace } from '../../features/auth/authSlice.js';
 import { useGetWebsitesQuery } from '../../features/websites/websitesApi.js';
@@ -35,6 +35,25 @@ const SEGMENT_LABELS = {
   country: 'Country',
   medium: 'Traffic medium',
 };
+
+// Compare mode
+const MAX_SERIES = 3;
+const SERIES_COLORS = ['#2563eb', '#8b5cf6', '#10b981'];
+const SERIES_LETTERS = ['A', 'B', 'C'];
+const DEFAULT_COMPARE = [
+  { source: 'ga4', segment: 'none', segmentValue: '', metric: 'totalUsers' },
+  { source: 'clarity', segment: 'none', segmentValue: '', metric: 'distinctUsers' },
+];
+
+/** "GA4 · Users · mobile" from a monthly series response. */
+function seriesLabel(meta) {
+  const value = meta.segmentValue
+    ? meta.source === 'gsc' && meta.segment === 'country'
+      ? meta.segmentValue.toUpperCase()
+      : meta.segmentValue
+    : null;
+  return [SOURCE_SHORT[meta.source], meta.metricLabel, value].filter(Boolean).join(' · ');
+}
 
 const SEGMENT_ALL_LABELS = {
   device: 'All devices',
@@ -179,7 +198,7 @@ function StatTile({ label, value, sub }) {
   );
 }
 
-function ChartTooltip({ active, payload, unit, series }) {
+function ChartTooltip({ active, payload, unit, units, series }) {
   if (!active || !payload?.length) return null;
   const row = payload[0].payload;
   return (
@@ -191,12 +210,12 @@ function ChartTooltip({ active, payload, unit, series }) {
             <span className="w-2 h-2 rounded-sm" style={{ background: p.color || p.fill }} />
             {series?.[p.dataKey] || p.name}
           </span>
-          <span className="font-mono font-bold">{formatValue(p.value, unit)}</span>
+          <span className="font-mono font-bold">{formatValue(p.value, units ? units[p.dataKey] : unit)}</span>
         </div>
       ))}
       {row.partial && (
         <div className="text-2xs text-amber-300 mt-1">
-          Partial month: {row.daysWithData} of {row.expectedDays} days
+          {units ? 'Includes an incomplete month' : `Partial month: ${row.daysWithData} of ${row.expectedDays} days`}
         </div>
       )}
     </div>
@@ -229,6 +248,10 @@ export default function ChartsPage() {
   const [metric, setMetric] = useState(saved.metric || 'totalUsers');
   const [preset, setPreset] = useState(saved.preset || '12m');
   const [clarityImportOpen, setClarityImportOpen] = useState(false);
+  // Compare mode: 2–3 series, each with the same filters as Single source
+  const [compareSeries, setCompareSeries] = useState(() =>
+    Array.isArray(saved.compareSeries) && saved.compareSeries.length >= 2 ? saved.compareSeries.slice(0, MAX_SERIES) : DEFAULT_COMPARE
+  );
   // Never open on empty custom months: fall back to the last 12 months
   const savedCustomOk = !customRangeError(saved.customFrom, saved.customTo);
   const [customFrom, setCustomFrom] = useState(savedCustomOk ? saved.customFrom : rangeFor('12m').startDate.slice(0, 7));
@@ -259,9 +282,24 @@ export default function ChartsPage() {
   useEffect(() => {
     localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ websiteId, mode, source, segment, metric, preset, customFrom, customTo })
+      JSON.stringify({ websiteId, mode, source, segment, metric, preset, customFrom, customTo, compareSeries })
     );
-  }, [websiteId, mode, source, segment, metric, preset, customFrom, customTo]);
+  }, [websiteId, mode, source, segment, metric, preset, customFrom, customTo, compareSeries]);
+
+  /** Change one compare series, keeping its segment and metric valid for its source. */
+  const updateSeries = (index, patch) =>
+    setCompareSeries((prev) =>
+      prev.map((s, i) => {
+        if (i !== index) return s;
+        const next = { ...s, ...patch };
+        const segs = catalogue?.[next.source]?.segments || {};
+        if (!segs[next.segment]) next.segment = 'none';
+        const mets = segs[next.segment] || {};
+        if (!mets[next.metric]) next.metric = Object.keys(mets)[0] || next.metric;
+        if (patch.source || patch.segment) next.segmentValue = patch.segmentValue ?? '';
+        return next;
+      })
+    );
 
   // Custom months only apply once both are valid and you've stopped typing,
   // so half-typed years don't fire a burst of requests. Until then the chart
@@ -300,20 +338,25 @@ export default function ChartsPage() {
 
   const metricValid = !!metrics[metric];
   const skipSingle = !workspaceId || !websiteId || !metricValid || mode !== 'single';
-  const skipCompare = !workspaceId || !websiteId || mode !== 'compare';
 
   const single = useGetMonthlyChartQuery(
     { workspaceId, websiteId, source, metric, segment, segmentValue, startDate, endDate },
     { skip: skipSingle }
   );
-  const ga4Users = useGetMonthlyChartQuery(
-    { workspaceId, websiteId, source: 'ga4', metric: 'totalUsers', startDate, endDate },
-    { skip: skipCompare }
-  );
-  const clarityUsers = useGetMonthlyChartQuery(
-    { workspaceId, websiteId, source: 'clarity', metric: 'distinctUsers', startDate, endDate },
-    { skip: skipCompare }
-  );
+
+  // One query per compare series (hooks can't be created in a loop, so a fixed 3)
+  const seriesArgs = (i) => {
+    const s = compareSeries[i];
+    return s ? { workspaceId, websiteId, source: s.source, metric: s.metric, segment: s.segment, segmentValue: s.segmentValue, startDate, endDate } : {};
+  };
+  const seriesSkip = (i) => {
+    const s = compareSeries[i];
+    return !workspaceId || !websiteId || mode !== 'compare' || !s || !catalogue?.[s.source]?.segments?.[s.segment]?.[s.metric];
+  };
+  const q0 = useGetMonthlyChartQuery(seriesArgs(0), { skip: seriesSkip(0) });
+  const q1 = useGetMonthlyChartQuery(seriesArgs(1), { skip: seriesSkip(1) });
+  const q2 = useGetMonthlyChartQuery(seriesArgs(2), { skip: seriesSkip(2) });
+  const seriesQueries = [q0, q1, q2].slice(0, compareSeries.length);
 
   const chart = useMemo(() => {
     if (mode === 'single') {
@@ -327,39 +370,56 @@ export default function ChartsPage() {
       }));
       return { meta: d, rows };
     }
-    const a = ga4Users.data?.data;
-    const b = clarityUsers.data?.data;
-    if (!a || !b) return null;
-    const bMap = new Map(b.series.map((p) => [p.month, p]));
-    const rows = a.series.map((p) => {
-      const c = bMap.get(p.month) || {};
-      return {
-        month: p.month,
-        label: monthLabel(p.month),
-        fullLabel: monthLabel(p.month).replace(' ', ' 20'),
-        ga4: p.value,
-        clarity: c.value ?? null,
-        ga4Partial: !!p.partial,
-        clarityPartial: !!c.partial,
-        clarityDays: c.daysWithData || 0,
-        partial: p.partial || c.partial,
-        daysWithData: Math.min(p.daysWithData, c.daysWithData ?? p.daysWithData),
-        expectedDays: p.expectedDays,
-        // Only compare months both tools fully cover, or the gap is meaningless
-        gap: p.value && c.value != null && !p.partial && !c.partial ? ((c.value - p.value) / p.value) * 100 : null,
-      };
+    const metas = seriesQueries.map((q) => q.data?.data);
+    if (metas.some((m) => !m)) return null;
+    const series = metas.map((m, i) => ({
+      key: `s${i}`,
+      meta: m,
+      color: SERIES_COLORS[i],
+      letter: SERIES_LETTERS[i],
+      label: seriesLabel(m),
+      unit: m.unit || null,
+    }));
+    // Second axis on the right for the first series whose unit differs from A's
+    const rightUnit = series.find((s) => s.unit !== series[0].unit)?.unit;
+    series.forEach((s) => {
+      s.axis = rightUnit !== undefined && s.unit === rightUnit ? 'right' : 'left';
     });
-    return { meta: { ga4: a, clarity: b, unit: null }, rows };
-  }, [mode, single.data, ga4Users.data, clarityUsers.data]);
+    const byMonth = metas.map((m) => new Map(m.series.map((p) => [p.month, p])));
+    const months = [...new Set(metas.flatMap((m) => m.series.map((p) => p.month)))].sort();
+    const rows = months.map((month) => {
+      const row = { month, label: monthLabel(month), fullLabel: monthLabel(month).replace(' ', ' 20') };
+      series.forEach((s, i) => {
+        const p = byMonth[i].get(month) || {};
+        row[s.key] = p.value ?? null;
+        row[`${s.key}Partial`] = !!p.partial;
+        row[`${s.key}Csv`] = p.source === 'csv';
+        row[`${s.key}Days`] = p.daysWithData || 0;
+        row.expectedDays = p.expectedDays || row.expectedDays;
+      });
+      row.partial = series.some((s) => row[`${s.key}Partial`]);
+      // Difference vs series A, only when both months are complete and share a unit
+      series.slice(1).forEach((s) => {
+        const a = row.s0;
+        const b = row[s.key];
+        row[`${s.key}VsA`] =
+          s.unit === series[0].unit && a && b !== null && !row.s0Partial && !row[`${s.key}Partial`] ? ((b - a) / Math.abs(a)) * 100 : null;
+      });
+      return row;
+    });
+    return { meta: { compare: true, series, rightUnit }, rows };
+  }, [mode, single.data, q0.data, q1.data, q2.data, compareSeries.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // First load shows a placeholder; later filter changes keep the previous
   // chart on screen (dimmed) until the new numbers arrive.
-  const isFetching = mode === 'single' ? single.isFetching : ga4Users.isFetching || clarityUsers.isFetching;
+  const activeQueries = mode === 'single' ? [single] : seriesQueries;
+  const isFetching = activeQueries.some((q) => q.isFetching);
   const isLoading = websitesLoading || (isFetching && !chart);
   const isUpdating = isFetching && !!chart;
-  const error = isFetching ? null : mode === 'single' ? single.error : ga4Users.error || clarityUsers.error;
+  const error = isFetching ? null : activeQueries.find((q) => q.error)?.error;
   const hasData =
-    chart && chart.rows.some((r) => (mode === 'single' ? r.value !== null : r.ga4 !== null || r.clarity !== null));
+    chart &&
+    chart.rows.some((r) => (mode === 'single' ? r.value !== null : chart.meta.series.some((s) => r[s.key] !== null)));
 
   // Summary tiles (single mode)
   const tiles = useMemo(() => {
@@ -389,14 +449,22 @@ export default function ChartsPage() {
         ? [['Month', chart.meta.metricLabel, 'Change vs previous month (%)', 'Days with data'].join(',')].concat(
             chart.rows.map((r) => [r.month, r.value ?? '', r.change === null ? '' : r.change.toFixed(2), r.daysWithData].join(','))
           )
-        : [['Month', 'GA4 users', 'Clarity users', 'Clarity vs GA4 (%)'].join(',')].concat(
-            chart.rows.map((r) => [r.month, r.ga4 ?? '', r.clarity ?? '', r.gap === null ? '' : r.gap.toFixed(2)].join(','))
+        : [
+            ['Month', ...chart.meta.series.map((s) => `"${s.letter}: ${s.label}"`), ...chart.meta.series.slice(1).filter((x) => x.unit === chart.meta.series[0].unit).map((s) => `"${s.letter} vs A (%)"`)].join(','),
+          ].concat(
+            chart.rows.map((r) =>
+              [
+                r.month,
+                ...chart.meta.series.map((s) => r[s.key] ?? ''),
+                ...chart.meta.series.slice(1).filter((x) => x.unit === chart.meta.series[0].unit).map((s) => (r[`${s.key}VsA`] === null ? '' : r[`${s.key}VsA`].toFixed(2))),
+              ].join(',')
+            )
           );
     const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     const site = websites.find((w) => w.id === websiteId);
-    a.download = `${site?.domain || 'website'}-${mode === 'single' ? `${source}-${metric}` : 'users-compare'}-${startDate.slice(0, 7)}-to-${endDate.slice(0, 7)}.csv`;
+    a.download = `${site?.domain || 'website'}-${mode === 'single' ? `${source}-${metric}` : `compare-${compareSeries.map((s) => `${s.source}-${s.metric}`).join('-vs-')}`}-${startDate.slice(0, 7)}-to-${endDate.slice(0, 7)}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
   };
@@ -446,7 +514,7 @@ export default function ChartsPage() {
           <div className="inline-flex rounded-lg border border-surface-200 p-0.5 bg-surface-50">
             {[
               ['single', 'Single source'],
-              ['compare', 'Compare tools (users)'],
+              ['compare', 'Compare'],
             ].map(([id, label]) => (
               <button
                 key={id}
@@ -567,6 +635,90 @@ export default function ChartsPage() {
             </div>
           )}
         </div>
+
+        {/* Compare: each series has the same filters as Single source */}
+        {mode === 'compare' && (
+          <div className="space-y-3 pt-1">
+            {compareSeries.map((s, i) => {
+              const segs = catalogue?.[s.source]?.segments || {};
+              const mets = segs[s.segment] || {};
+              const options = seriesQueries[i]?.data?.data?.segmentOptions || [];
+              return (
+                <div key={i} className="rounded-xl border border-surface-200 p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="flex items-center gap-2 text-xs font-semibold text-surface-700">
+                      <span className="w-3 h-3 rounded-sm" style={{ background: SERIES_COLORS[i] }} />
+                      Series {SERIES_LETTERS[i]}
+                    </span>
+                    {compareSeries.length > 2 && (
+                      <button
+                        type="button"
+                        className="p-1 text-surface-400 hover:text-rose-600"
+                        title="Remove this series"
+                        onClick={() => setCompareSeries((prev) => prev.filter((_, j) => j !== i))}
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <Select label="Source" value={s.source} onChange={(v) => updateSeries(i, { source: v })}>
+                      {['ga4', 'gsc', 'clarity'].map((src) => (
+                        <option key={src} value={src}>
+                          {SOURCE_SHORT[src]}
+                        </option>
+                      ))}
+                    </Select>
+                    <Select label="Metric" value={mets[s.metric] ? s.metric : ''} onChange={(v) => updateSeries(i, { metric: v })}>
+                      {Object.entries(mets).map(([k, m]) => (
+                        <option key={k} value={k}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </Select>
+                    <Select
+                      label="Segment by"
+                      value={s.segment}
+                      onChange={(v) => updateSeries(i, { segment: v })}
+                      disabled={Object.keys(segs).length < 2}
+                    >
+                      {Object.keys(segs).map((k) => (
+                        <option key={k} value={k}>
+                          {SEGMENT_LABELS[k] || k}
+                        </option>
+                      ))}
+                    </Select>
+                    {s.segment !== 'none' && (
+                      <Select label={SEGMENT_LABELS[s.segment]} value={s.segmentValue} onChange={(v) => updateSeries(i, { segmentValue: v })}>
+                        <option value="">{SEGMENT_ALL_LABELS[s.segment] || 'All'}</option>
+                        {options.map((o) => (
+                          <option key={o} value={o}>
+                            {s.source === 'gsc' && s.segment === 'country' ? o.toUpperCase() : o}
+                          </option>
+                        ))}
+                      </Select>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            <div className="flex flex-wrap items-center gap-2">
+              {compareSeries.length < MAX_SERIES && (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setCompareSeries((prev) => [...prev, { source: 'gsc', segment: 'none', segmentValue: '', metric: 'clicks' }])}
+                >
+                  <Plus className="w-4 h-4" />
+                  Add series
+                </button>
+              )}
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setCompareSeries(DEFAULT_COMPARE)}>
+                Reset to GA4 vs Clarity users
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Notes about how numbers are counted */}
@@ -591,11 +743,29 @@ export default function ChartsPage() {
           downloads you imported.
         </div>
       )}
-      {mode === 'compare' && (
+      {mode === 'compare' && chart?.meta?.compare && (
         <div className="flex gap-2 text-xs text-surface-600 bg-surface-50 border border-surface-200 rounded-lg p-3">
           <Info className="w-4 h-4 text-surface-500 flex-shrink-0 mt-0.5" />
-          GA4 and Clarity identify visitors differently, so they will never match exactly. A sudden gap between them usually
-          means one tracking code stopped firing on some pages. GA4 shows unique users per month; Clarity adds up daily users.
+          <div className="space-y-1">
+            <p>Each series is shown side by side, never added together.</p>
+            {new Set(chart.meta.series.map((s) => s.meta.source)).size > 1 &&
+              chart.meta.series.some((s) => s.meta.usersMethod) && (
+                <p>
+                  Different tools identify visitors differently, so their user counts never match exactly. A sudden gap usually
+                  means one tracking code stopped firing on some pages.
+                </p>
+              )}
+            {chart.meta.series
+              .filter((s) => s.meta.usersMethod === 'sum_of_daily')
+              .map((s) => (
+                <p key={s.key}>
+                  Series {s.letter} adds up daily user counts, so a visitor on 5 days counts 5 times.
+                </p>
+              ))}
+            {chart.meta.rightUnit !== undefined && (
+              <p>Series with a different unit ({chart.meta.rightUnit || 'counts'}) use the axis on the right.</p>
+            )}
+          </div>
         </div>
       )}
 
@@ -640,13 +810,45 @@ export default function ChartsPage() {
         </div>
       )}
 
+      {/* Summary tiles (compare): one per series */}
+      {mode === 'compare' && chart?.meta?.compare && hasData && (
+        <div className={`grid grid-cols-1 sm:grid-cols-2 gap-4 ${chart.meta.series.length === 3 ? 'lg:grid-cols-3' : ''}`}>
+          {chart.meta.series.map((s) => {
+            const complete = chart.rows.filter((r) => r[s.key] !== null && !r[`${s.key}Partial`]);
+            const last = complete[complete.length - 1];
+            const prev = complete[complete.length - 2];
+            return (
+              <div key={s.key} className="card p-4">
+                <p className="flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-wider text-surface-400">
+                  <span className="w-2.5 h-2.5 rounded-sm" style={{ background: s.color }} />
+                  Series {s.letter}
+                </p>
+                <p className="text-xs text-surface-600 mt-0.5 truncate" title={s.label}>
+                  {s.label}
+                </p>
+                <p className="text-xl font-semibold text-surface-900 mt-1 tabular-nums">{formatValue(s.meta.stats.average, s.unit)}</p>
+                <p className="text-xs text-surface-500">
+                  monthly average
+                  {last && (
+                    <span className="inline-flex items-center gap-1 ml-1">
+                      · {last.fullLabel}: {formatValue(last[s.key], s.unit)}{' '}
+                      <ChangeBadge value={prev ? pctChange(last[s.key], prev[s.key]) : null} lowerIsBetter={s.meta.lowerIsBetter} />
+                    </span>
+                  )}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* Chart */}
       <div className="card p-5">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-semibold text-surface-900">
             {mode === 'single'
               ? `${chart?.meta?.metricLabel || 'Metric'} by month · ${SOURCE_SHORT[source]}${segmentValue ? ` · ${source === 'gsc' && segment === 'country' ? segmentValue.toUpperCase() : segmentValue}` : ''}`
-              : 'Users by month · GA4 vs Clarity'}
+              : `Compare by month${chart?.meta?.compare ? ` · ${chart.meta.series.map((s) => s.letter).join(' vs ')}` : ''}`}
           </h2>
           <span className="text-xs text-surface-400">
             {startDate} → {endDate}
@@ -674,18 +876,42 @@ export default function ChartsPage() {
               <BarChart data={chart.rows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }} barCategoryGap="20%">
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                 <XAxis dataKey="label" stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={{ stroke: '#e2e8f0' }} />
-                <YAxis stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => compactAxis(v, unit)} width={48} />
+                <YAxis
+                  yAxisId="left"
+                  stroke="#94a3b8"
+                  fontSize={11}
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={(v) => compactAxis(v, mode === 'single' ? unit : chart.meta.series[0].unit)}
+                  width={48}
+                />
+                {mode === 'compare' && chart.meta.rightUnit !== undefined && (
+                  <YAxis
+                    yAxisId="right"
+                    orientation="right"
+                    stroke="#94a3b8"
+                    fontSize={11}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => compactAxis(v, chart.meta.rightUnit)}
+                    width={48}
+                  />
+                )}
                 <Tooltip
                   cursor={{ fill: '#f1f5f9' }}
                   content={
-                    <ChartTooltip
-                      unit={unit}
-                      series={mode === 'single' ? { value: chart.meta.metricLabel } : { ga4: 'GA4 users', clarity: 'Clarity users' }}
-                    />
+                    mode === 'single' ? (
+                      <ChartTooltip unit={unit} series={{ value: chart.meta.metricLabel }} />
+                    ) : (
+                      <ChartTooltip
+                        units={Object.fromEntries(chart.meta.series.map((s) => [s.key, s.unit]))}
+                        series={Object.fromEntries(chart.meta.series.map((s) => [s.key, `${s.letter}: ${s.label}`]))}
+                      />
+                    )
                   }
                 />
                 {mode === 'single' ? (
-                  <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={48}>
+                  <Bar yAxisId="left" dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={48}>
                     {chart.rows.map((r) => (
                       <Cell key={r.month} fill={color} fillOpacity={r.partial ? 0.45 : 1} />
                     ))}
@@ -696,18 +922,18 @@ export default function ChartsPage() {
                       iconType="square"
                       iconSize={10}
                       wrapperStyle={{ fontSize: 12 }}
-                      formatter={(v) => (v === 'ga4' ? 'GA4 users' : 'Clarity users')}
+                      formatter={(v) => {
+                        const s = chart.meta.series.find((x) => x.key === v);
+                        return s ? `${s.letter}: ${s.label}` : v;
+                      }}
                     />
-                    <Bar dataKey="ga4" fill={SOURCE_COLORS.ga4} radius={[4, 4, 0, 0]} maxBarSize={32}>
-                      {chart.rows.map((r) => (
-                        <Cell key={r.month} fill={SOURCE_COLORS.ga4} fillOpacity={r.ga4Partial ? 0.45 : 1} />
-                      ))}
-                    </Bar>
-                    <Bar dataKey="clarity" fill={SOURCE_COLORS.clarity} radius={[4, 4, 0, 0]} maxBarSize={32}>
-                      {chart.rows.map((r) => (
-                        <Cell key={r.month} fill={SOURCE_COLORS.clarity} fillOpacity={r.clarityPartial ? 0.45 : 1} />
-                      ))}
-                    </Bar>
+                    {chart.meta.series.map((s) => (
+                      <Bar key={s.key} yAxisId={s.axis} dataKey={s.key} fill={s.color} radius={[4, 4, 0, 0]} maxBarSize={32}>
+                        {chart.rows.map((r) => (
+                          <Cell key={r.month} fill={s.color} fillOpacity={r[`${s.key}Partial`] ? 0.45 : 1} />
+                        ))}
+                      </Bar>
+                    ))}
                   </>
                 )}
               </BarChart>
@@ -717,7 +943,7 @@ export default function ChartsPage() {
         </div>
         {hasData && chart.rows.some((r) => r.partial) && (
           <p className="flex items-center gap-1.5 text-2xs text-surface-500 mt-2">
-            <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: mode === 'single' ? color : SOURCE_COLORS.ga4, opacity: 0.45 }} />
+            <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: mode === 'single' ? color : SERIES_COLORS[0], opacity: 0.45 }} />
             Lighter bar = incomplete month, e.g. the current month so far or a month with sync gaps. Not loading.
           </p>
         )}
@@ -738,9 +964,20 @@ export default function ChartsPage() {
               ) : (
                 <tr>
                   <th className="text-left font-semibold px-5 py-2.5">Month</th>
-                  <th className="text-right font-semibold px-5 py-2.5">GA4 users</th>
-                  <th className="text-right font-semibold px-5 py-2.5">Clarity users</th>
-                  <th className="text-right font-semibold px-5 py-2.5">Clarity vs GA4</th>
+                  {chart.meta.series.map((s) => (
+                    <th key={s.key} className="text-right font-semibold px-5 py-2.5" title={s.label}>
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-sm" style={{ background: s.color }} />
+                        {s.letter}
+                      </span>
+                      <span className="block text-[10px] font-normal normal-case text-surface-400 max-w-[180px] truncate ml-auto">{s.label}</span>
+                    </th>
+                  ))}
+                  {chart.meta.series.slice(1).filter((x) => x.unit === chart.meta.series[0].unit).map((s) => (
+                    <th key={`${s.key}-vs`} className="text-right font-semibold px-5 py-2.5">
+                      {s.letter} vs A
+                    </th>
+                  ))}
                 </tr>
               )}
             </thead>
@@ -768,18 +1005,25 @@ export default function ChartsPage() {
                 ) : (
                   <tr key={r.month} className="hover:bg-surface-50/60">
                     <td className="px-5 py-2.5 text-surface-800">{r.fullLabel}</td>
-                    <td className="px-5 py-2.5 text-right tabular-nums">{formatValue(r.ga4)}</td>
-                    <td className="px-5 py-2.5 text-right tabular-nums">
-                      {formatValue(r.clarity)}
-                      {r.clarityPartial && (
-                        <span className="block text-2xs text-amber-600">
-                          {r.clarityDays} of {r.expectedDays} days synced
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-5 py-2.5 text-right tabular-nums text-xs text-surface-500">
-                      {r.gap === null ? '—' : `${r.gap > 0 ? '+' : ''}${r.gap.toFixed(1)}%`}
-                    </td>
+                    {chart.meta.series.map((s) => (
+                      <td key={s.key} className="px-5 py-2.5 text-right tabular-nums">
+                        {formatValue(r[s.key], s.unit)}
+                        {r[`${s.key}Csv`] && <span className="badge-blue ml-1.5">CSV</span>}
+                        {r[`${s.key}Partial`] && (
+                          <span className="block text-2xs text-amber-600">
+                            {r[`${s.key}Days`] >= r.expectedDays ? 'month so far' : `${r[`${s.key}Days`]} of ${r.expectedDays} days`}
+                          </span>
+                        )}
+                      </td>
+                    ))}
+                    {chart.meta.series.slice(1).filter((x) => x.unit === chart.meta.series[0].unit).map((s) => {
+                      const v = r[`${s.key}VsA`];
+                      return (
+                        <td key={`${s.key}-vs`} className="px-5 py-2.5 text-right tabular-nums text-xs text-surface-500">
+                          {v === null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(1)}%`}
+                        </td>
+                      );
+                    })}
                   </tr>
                 )
               )}

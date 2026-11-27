@@ -6,7 +6,7 @@
 // you confirm the month, then the whole batch is saved in one go.
 
 import React, { useRef, useState } from 'react';
-import { Upload, FileSpreadsheet, Trash2, Loader2, CheckCircle2, AlertTriangle, X, Info } from 'lucide-react';
+import { Upload, FileSpreadsheet, FolderOpen, Trash2, Loader2, CheckCircle2, AlertTriangle, X, Info } from 'lucide-react';
 import Modal from '../../../components/common/Modal.jsx';
 import {
   usePreviewClarityCsvMutation,
@@ -44,6 +44,31 @@ function formatMetric(key, v) {
   return Number(v).toLocaleString();
 }
 
+/**
+ * Files from a drag-and-drop, including everything inside dropped folders.
+ * Entries must be read before the first await: the browser clears the
+ * DataTransfer once the drop event has finished.
+ */
+async function filesFromDrop(dataTransfer) {
+  const entries = [...(dataTransfer.items || [])].map((item) => item.webkitGetAsEntry?.()).filter(Boolean);
+  if (!entries.length) return [...(dataTransfer.files || [])];
+  const out = [];
+  const walk = async (entry) => {
+    if (entry.isFile) {
+      out.push(await new Promise((resolve, reject) => entry.file(resolve, reject)));
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      let batch;
+      do {
+        batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+        for (const child of batch) await walk(child);
+      } while (batch.length);
+    }
+  };
+  for (const entry of entries) await walk(entry);
+  return out;
+}
+
 function errorText(err) {
   return err?.data?.error?.message || err?.data?.message || err?.message || 'Something went wrong.';
 }
@@ -51,6 +76,8 @@ function errorText(err) {
 /** The upload, preview and imported-months list, usable inside any dialog. */
 export function ClarityCsvImporter({ workspaceId, websiteId }) {
   const inputRef = useRef(null);
+  const folderRef = useRef(null);
+  const [notice, setNotice] = useState(null);
   const [rows, setRows] = useState([]); // { name, content, preview, month }
   const [dragOver, setDragOver] = useState(false);
   const [result, setResult] = useState(null);
@@ -67,25 +94,37 @@ export function ClarityCsvImporter({ workspaceId, websiteId }) {
     setRows([]);
     setResult(null);
     setError(null);
+    setNotice(null);
   };
 
   const addFiles = async (fileList) => {
     setError(null);
     setResult(null);
-    const files = [...fileList].filter((f) => /\.csv$/i.test(f.name));
+    setNotice(null);
+    const all = [...(fileList || [])];
+    const csvs = all.filter((f) => /\.csv$/i.test(f.name));
+    const notCsv = all.length - csvs.length;
+    const tooBig = csvs.filter((f) => f.size > MAX_FILE_BYTES);
+    const files = csvs.filter((f) => f.size <= MAX_FILE_BYTES);
     if (!files.length) {
-      setError('Choose .csv files downloaded from the Clarity dashboard.');
+      setError(
+        tooBig.length
+          ? `${tooBig.map((f) => f.name).join(', ')} ${tooBig.length === 1 ? 'is' : 'are'} larger than 2 MB.`
+          : 'No .csv files found. Choose the CSV files downloaded from the Clarity dashboard.'
+      );
       return;
     }
-    const tooBig = files.find((f) => f.size > MAX_FILE_BYTES);
-    if (tooBig) {
-      setError(`${tooBig.name} is larger than 2 MB. Download the dashboard summary rather than a large widget export.`);
+    const newNames = new Set(files.map((f) => f.name));
+    const keptCount = rows.filter((r) => !newNames.has(r.name)).length;
+    if (files.length + keptCount > MAX_FILES) {
+      setError(`That's ${files.length + keptCount} files. Add up to ${MAX_FILES} at a time.`);
       return;
     }
-    if (files.length + rows.length > MAX_FILES) {
-      setError(`Add up to ${MAX_FILES} files at a time.`);
-      return;
-    }
+    const skipped = [
+      notCsv && `${notCsv} non-CSV file${notCsv === 1 ? '' : 's'}`,
+      tooBig.length && `${tooBig.length} file${tooBig.length === 1 ? '' : 's'} over 2 MB`,
+    ].filter(Boolean);
+    setNotice(`Added ${files.length} file${files.length === 1 ? '' : 's'}.${skipped.length ? ` Skipped ${skipped.join(' and ')}.` : ''}`);
     const read = await Promise.all(files.map(async (f) => ({ name: f.name, content: await f.text() })));
     try {
       // Sent in batches so a large upload stays under the server's request size limit
@@ -165,17 +204,17 @@ export function ClarityCsvImporter({ workspaceId, websiteId }) {
           </ol>
         </div>
 
-        {/* Drop zone */}
+        {/* Drop zone: many files at once, or a whole folder */}
         <div
           onDragOver={(e) => {
             e.preventDefault();
             setDragOver(true);
           }}
           onDragLeave={() => setDragOver(false)}
-          onDrop={(e) => {
+          onDrop={async (e) => {
             e.preventDefault();
             setDragOver(false);
-            addFiles(e.dataTransfer.files);
+            addFiles(await filesFromDrop(e.dataTransfer));
           }}
           onClick={() => inputRef.current?.click()}
           className={`flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed p-6 cursor-pointer transition-colors ${
@@ -183,8 +222,22 @@ export function ClarityCsvImporter({ workspaceId, websiteId }) {
           }`}
         >
           {previewing ? <Loader2 className="w-6 h-6 animate-spin text-brand-600" /> : <Upload className="w-6 h-6 text-surface-400" />}
-          <p className="text-sm text-surface-700 font-medium">{previewing ? 'Reading files…' : 'Drop CSV files here or click to choose'}</p>
-          <p className="text-2xs text-surface-400">Up to 120 files (10 years), 2 MB each</p>
+          <p className="text-sm text-surface-700 font-medium">
+            {previewing ? 'Reading files…' : 'Drop all your monthly CSV files (or a folder) here'}
+          </p>
+          <div className="flex flex-wrap justify-center gap-2" onClick={(e) => e.stopPropagation()}>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => inputRef.current?.click()} disabled={previewing}>
+              <FileSpreadsheet className="w-4 h-4" />
+              Choose files
+            </button>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => folderRef.current?.click()} disabled={previewing}>
+              <FolderOpen className="w-4 h-4" />
+              Choose folder
+            </button>
+          </div>
+          <p className="text-2xs text-surface-400">
+            Select several files at once with Ctrl or Shift. Up to {MAX_FILES} files (10 years), 2 MB each.
+          </p>
           <input
             ref={inputRef}
             type="file"
@@ -196,7 +249,31 @@ export function ClarityCsvImporter({ workspaceId, websiteId }) {
               e.target.value = '';
             }}
           />
+          <input
+            ref={(el) => {
+              folderRef.current = el;
+              // Folder picking isn't a standard React prop
+              if (el) {
+                el.setAttribute('webkitdirectory', '');
+                el.setAttribute('directory', '');
+              }
+            }}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              addFiles(e.target.files);
+              e.target.value = '';
+            }}
+          />
         </div>
+
+        {notice && (
+          <div className="flex gap-2 text-xs text-surface-700 bg-surface-50 border border-surface-200 rounded-lg p-3">
+            <Info className="w-4 h-4 text-brand-600 flex-shrink-0 mt-0.5" />
+            {notice}
+          </div>
+        )}
 
         {error && (
           <div className="flex gap-2 text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-lg p-3">

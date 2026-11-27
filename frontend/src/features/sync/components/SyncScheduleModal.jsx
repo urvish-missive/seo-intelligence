@@ -13,7 +13,7 @@ export default function SyncScheduleModal({
   schedule,
 }) {
   const [enabled, setEnabled] = useState(true);
-  const [intervalMinutes, setIntervalMinutes] = useState(1440);
+  const [intervalMinutes, setIntervalMinutes] = useState(720);
   const [errorMsg, setErrorMsg] = useState(null);
 
   const [updateSchedule, { isLoading }] = useUpdateWebsiteSyncScheduleMutation();
@@ -21,7 +21,7 @@ export default function SyncScheduleModal({
   useEffect(() => {
     if (schedule) {
       setEnabled(schedule.enabled !== undefined ? schedule.enabled : true);
-      setIntervalMinutes(schedule.intervalMinutes || 1440);
+      setIntervalMinutes(schedule.intervalMinutes || 720);
     }
   }, [schedule]);
 
@@ -90,13 +90,13 @@ export default function SyncScheduleModal({
               onChange={(e) => setIntervalMinutes(Number(e.target.value))}
               className="input-field text-sm"
             >
-              <option value={1440}>Every 24 hours (Daily at 02:00 UTC) - Recommended</option>
-              <option value={720}>Every 12 hours (Twice daily)</option>
+              <option value={720}>Every 12 hours (Twice daily) - Recommended</option>
+              <option value={1440}>Every 24 hours (Once daily)</option>
               <option value={360}>Every 6 hours (4 times daily)</option>
             </select>
             <span className="text-2xs text-surface-400">
               {provider === 'CLARITY'
-                ? 'Note: Microsoft Clarity enforces 10 calls/day per project. Daily sync is strongly recommended.'
+                ? 'Microsoft Clarity allows 10 calls a day per project; twice daily uses 2. Avoid every 6 hours if you also import manually.'
                 : 'Pulls finalized data from Google APIs and updates local MySQL checkpoints.'}
             </span>
           </div>
