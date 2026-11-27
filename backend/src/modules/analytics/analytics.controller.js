@@ -5,6 +5,18 @@ import analyticsDataService from './analyticsData.service.js';
 import { reportDataAggregatorService } from '../reports/services/report-data-aggregator.service.js';
 import { BadRequestError } from '../../middleware/errorHandler.js';
 import { monthlyChartService, getChartCatalogue } from './monthlyChart.service.js';
+import { insightsService } from './insights.service.js';
+
+const insightsHandler = (method) =>
+  async function handler(req, res, next) {
+    try {
+      const { workspaceId, websiteId } = req.params;
+      const data = await insightsService[method](workspaceId, websiteId, readDateRange(req.query));
+      res.json({ success: true, data });
+    } catch (err) {
+      next(err);
+    }
+  };
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -247,6 +259,12 @@ export class AnalyticsController {
       next(err);
     }
   }
+
+  getInsightsVisitors = insightsHandler('getVisitors');
+  getInsightsForms = insightsHandler('getForms');
+  getInsightsAiVisitors = insightsHandler('getAiVisitors');
+  getInsightsChannels = insightsHandler('getChannels');
+  getInsightsPages = insightsHandler('getPages');
 
   async getAgencyOverview(req, res, next) {
     try {

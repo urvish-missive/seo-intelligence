@@ -103,4 +103,19 @@ router.get(
   (req, res, next) => analyticsController.getMonthlyChart(req, res, next)
 );
 
+// Insights page sections (each loads on its own)
+for (const [path, handler] of [
+  ['visitors', 'getInsightsVisitors'],
+  ['forms', 'getInsightsForms'],
+  ['ai-visitors', 'getInsightsAiVisitors'],
+  ['channels', 'getInsightsChannels'],
+  ['pages', 'getInsightsPages'],
+]) {
+  router.get(
+    `/workspaces/:workspaceId/websites/:websiteId/analytics/insights/${path}`,
+    requirePermission('websites.view'),
+    (req, res, next) => analyticsController[handler](req, res, next)
+  );
+}
+
 export default router;

@@ -231,6 +231,13 @@ export const analyticsApi = baseApi.injectEndpoints({
       providesTags: ['WebsiteAnalytics'],
     }),
 
+    // Insights page: one section at a time (visitors, forms, ai-visitors, channels, pages)
+    getInsights: builder.query({
+      query: ({ workspaceId, websiteId, section, startDate, endDate }) =>
+        `/workspaces/${workspaceId}/websites/${websiteId}/analytics/insights/${section}${buildQs({ startDate, endDate })}`,
+      providesTags: ['WebsiteAnalytics'],
+    }),
+
     // Charts page: which metrics each source/segment offers
     getChartCatalogue: builder.query({
       query: (workspaceId) => `/workspaces/${workspaceId}/analytics/charts/catalogue`,
@@ -263,4 +270,5 @@ export const {
   useGetClaritySummaryQuery,
   useGetChartCatalogueQuery,
   useGetMonthlyChartQuery,
+  useGetInsightsQuery,
 } = analyticsApi;

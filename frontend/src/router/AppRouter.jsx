@@ -24,6 +24,7 @@ const AIAssistantPage = lazy(() => import('../pages/ai/AIAssistantPage.jsx'));
 const MCPManagementPage = lazy(() => import('../pages/settings/MCPManagementPage.jsx'));
 const ReportsPage = lazy(() => import('../pages/reports/ReportsPage.jsx'));
 const ChartsPage = lazy(() => import('../pages/charts/ChartsPage.jsx'));
+const InsightsPage = lazy(() => import('../pages/insights/InsightsPage.jsx'));
 
 function ProtectedRoute({ children }) {
   const isAuthenticated = useSelector(selectIsAuthenticated);
@@ -64,6 +65,7 @@ export default function AppRouter() {
           <Route path="ai-assistant" element={<AIAssistantPage />} />
           <Route path="reports" element={<ReportsPage />} />
           <Route path="charts" element={<ChartsPage />} />
+          <Route path="insights" element={<InsightsPage />} />
         </Route>
 
         {/* Fallback */}
