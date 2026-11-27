@@ -18,6 +18,9 @@ import {
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const monthLabel = (ym) => (ym ? `${MONTHS[Number(ym.slice(5)) - 1]} ${ym.slice(0, 4)}` : '—');
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_FILES = 120; // 10 years of monthly downloads
+const BATCH_SIZE = 20;
+const chunk = (list, size) => Array.from({ length: Math.ceil(list.length / size) }, (_, i) => list.slice(i * size, i * size + size));
 
 const METRIC_LABELS = {
   sessions: 'Sessions',
@@ -45,7 +48,8 @@ function errorText(err) {
   return err?.data?.error?.message || err?.data?.message || err?.message || 'Something went wrong.';
 }
 
-export default function ClarityCsvImportModal({ isOpen, onClose, workspaceId, websiteId, websiteName }) {
+/** The upload, preview and imported-months list, usable inside any dialog. */
+export function ClarityCsvImporter({ workspaceId, websiteId }) {
   const inputRef = useRef(null);
   const [rows, setRows] = useState([]); // { name, content, preview, month }
   const [dragOver, setDragOver] = useState(false);
@@ -55,7 +59,7 @@ export default function ClarityCsvImportModal({ isOpen, onClose, workspaceId, we
   const [previewCsv, { isLoading: previewing }] = usePreviewClarityCsvMutation();
   const [importCsv, { isLoading: importing }] = useImportClarityCsvMutation();
   const [deleteImport] = useDeleteClarityCsvImportMutation();
-  const importsQuery = useGetClarityCsvImportsQuery({ workspaceId, websiteId }, { skip: !isOpen || !websiteId });
+  const importsQuery = useGetClarityCsvImportsQuery({ workspaceId, websiteId }, { skip: !websiteId });
   const imports = importsQuery.data?.data?.imports || [];
   const importedMonths = new Set(imports.map((i) => i.month));
 
@@ -78,10 +82,18 @@ export default function ClarityCsvImportModal({ isOpen, onClose, workspaceId, we
       setError(`${tooBig.name} is larger than 2 MB. Download the dashboard summary rather than a large widget export.`);
       return;
     }
+    if (files.length + rows.length > MAX_FILES) {
+      setError(`Add up to ${MAX_FILES} files at a time.`);
+      return;
+    }
     const read = await Promise.all(files.map(async (f) => ({ name: f.name, content: await f.text() })));
     try {
-      const res = await previewCsv({ workspaceId, websiteId, files: read }).unwrap();
-      const previews = res.data.files;
+      // Sent in batches so a large upload stays under the server's request size limit
+      const previews = [];
+      for (const batch of chunk(read, BATCH_SIZE)) {
+        const res = await previewCsv({ workspaceId, websiteId, files: batch }).unwrap();
+        previews.push(...res.data.files);
+      }
       setRows((prev) => {
         const kept = prev.filter((p) => !read.some((r) => r.name === p.name));
         return [
@@ -94,42 +106,58 @@ export default function ClarityCsvImportModal({ isOpen, onClose, workspaceId, we
     }
   };
 
-  const ready = rows.filter((r) => r.month && r.preview?.metricsFound > 0);
+  // Months each file will create: one, or many for a file with dated rows
+  const monthsOf = (r) => (r.preview?.split?.length ? r.preview.split.map((s) => s.month) : r.month ? [r.month] : []);
+  const ready = rows.filter(
+    (r) => !r.preview?.errors?.length && (r.preview?.split?.length > 0 || (r.month && r.preview?.metricsFound > 0))
+  );
+  const readyMonthCount = ready.reduce((acc, r) => acc + monthsOf(r).length, 0);
   const duplicateMonths = (() => {
     const seen = new Map();
-    rows.forEach((r) => r.month && seen.set(r.month, (seen.get(r.month) || 0) + 1));
+    rows.forEach((r) => monthsOf(r).forEach((m) => seen.set(m, (seen.get(m) || 0) + 1)));
     return new Set([...seen].filter(([, n]) => n > 1).map(([m]) => m));
   })();
 
   const doImport = async () => {
     setError(null);
+    // Duplicate months are already blocked in the preview, so batches can't clash
+    const done = { imported: [], replaced: 0 };
+    const importedNames = new Set();
     try {
-      const res = await importCsv({
-        workspaceId,
-        websiteId,
-        files: ready.map((r) => ({ name: r.name, content: r.content, month: r.month })),
-      }).unwrap();
-      setResult(res.data);
+      for (const batch of chunk(ready, BATCH_SIZE)) {
+        const res = await importCsv({
+          workspaceId,
+          websiteId,
+          files: batch.map((r) => ({ name: r.name, content: r.content, month: r.month })),
+        }).unwrap();
+        done.imported.push(...res.data.imported);
+        done.replaced += res.data.replaced;
+        batch.forEach((r) => importedNames.add(r.name));
+      }
+      done.imported.sort((a, b) => a.month.localeCompare(b.month));
+      setResult(done);
       setRows([]);
     } catch (e) {
+      // Keep only the files that weren't saved yet, so a retry doesn't redo them
+      if (done.imported.length) {
+        setResult(done);
+        setRows((prev) => prev.filter((r) => !importedNames.has(r.name)));
+      }
       setError(errorText(e));
     }
   };
 
-  const close = () => {
-    reset();
-    onClose();
-  };
-
   return (
-    <Modal isOpen={isOpen} onClose={close} title={`Import Clarity history${websiteName ? ` · ${websiteName}` : ''}`} maxWidth="max-w-3xl">
       <div className="space-y-5">
         {/* How to get the files */}
         <div className="flex gap-2 text-xs text-surface-700 bg-brand-50 border border-brand-100 rounded-lg p-3">
           <Info className="w-4 h-4 text-brand-600 flex-shrink-0 mt-0.5" />
           <ol className="list-decimal ml-4 space-y-0.5">
             <li>In Clarity, open this project&apos;s <strong>Dashboard</strong>.</li>
-            <li>Set the date range to <strong>one whole month</strong> (e.g. 1–31 Dec 2025).</li>
+            <li>
+              Set the date range to <strong>one whole month</strong> (e.g. 1–31 Dec 2025). A longer range downloads as one
+              total, which can&apos;t be split into months.
+            </li>
             <li>
               Click <strong>Download → CSV</strong>, then repeat for each month. Clarity keeps about 13 months.
             </li>
@@ -156,7 +184,7 @@ export default function ClarityCsvImportModal({ isOpen, onClose, workspaceId, we
         >
           {previewing ? <Loader2 className="w-6 h-6 animate-spin text-brand-600" /> : <Upload className="w-6 h-6 text-surface-400" />}
           <p className="text-sm text-surface-700 font-medium">{previewing ? 'Reading files…' : 'Drop CSV files here or click to choose'}</p>
-          <p className="text-2xs text-surface-400">Up to 24 files, 2 MB each</p>
+          <p className="text-2xs text-surface-400">Up to 120 files (10 years), 2 MB each</p>
           <input
             ref={inputRef}
             type="file"
@@ -196,19 +224,32 @@ export default function ClarityCsvImportModal({ isOpen, onClose, workspaceId, we
               const p = r.preview || {};
               const found = Object.entries(p.metrics || {}).filter(([, v]) => v !== null && v !== undefined);
               return (
-                <div key={r.name} className="rounded-xl border border-surface-200 p-3 space-y-2">
+                <div
+                  key={r.name}
+                  className={`rounded-xl border p-3 space-y-2 ${p.errors?.length ? 'border-rose-200 bg-rose-50/40' : 'border-surface-200'}`}
+                >
                   <div className="flex flex-wrap items-center gap-3">
-                    <FileSpreadsheet className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                    <FileSpreadsheet className={`w-4 h-4 flex-shrink-0 ${p.errors?.length ? 'text-rose-500' : 'text-emerald-600'}`} />
                     <span className="text-sm font-medium text-surface-800 break-all flex-1 min-w-[160px]">{r.name}</span>
-                    <label className="flex items-center gap-2 text-xs text-surface-600">
-                      Month
-                      <input
-                        type="month"
-                        className={`input py-1 w-40 ${!r.month || duplicateMonths.has(r.month) ? 'input-error' : ''}`}
-                        value={r.month}
-                        onChange={(e) => setRows((prev) => prev.map((x) => (x.name === r.name ? { ...x, month: e.target.value } : x)))}
-                      />
-                    </label>
+                    {p.split?.length > 0 && (
+                      <span className="badge-blue">
+                        Splits into {p.split.length} months
+                      </span>
+                    )}
+                    {!p.errors?.length && !p.split?.length && (
+                      <label className="flex items-center gap-2 text-xs text-surface-600">
+                        Month
+                        <input
+                          type="month"
+                          className={`input py-1 w-40 ${!r.month || duplicateMonths.has(r.month) ? 'input-error' : ''}`}
+                          value={r.month}
+                          // A month read from the file's own date range can't be changed
+                          disabled={p.monthSource === 'content'}
+                          title={p.monthSource === 'content' ? 'Taken from the date range inside the file' : undefined}
+                          onChange={(e) => setRows((prev) => prev.map((x) => (x.name === r.name ? { ...x, month: e.target.value } : x)))}
+                        />
+                      </label>
+                    )}
                     <button
                       type="button"
                       onClick={() => setRows((prev) => prev.filter((x) => x.name !== r.name))}
@@ -230,15 +271,56 @@ export default function ClarityCsvImportModal({ isOpen, onClose, workspaceId, we
                     )}
                     {p.pagesCount > 0 && <span className="badge-blue">{p.pagesCount} pages</span>}
                   </div>
+                  {p.split?.length > 0 && (
+                    <div className="border border-surface-200 rounded-lg overflow-hidden">
+                      <table className="w-full text-xs">
+                        <thead className="bg-surface-50 text-2xs text-surface-500 uppercase tracking-wider">
+                          <tr>
+                            <th className="text-left font-semibold px-3 py-1.5">Month</th>
+                            <th className="text-right font-semibold px-3 py-1.5">Sessions</th>
+                            <th className="text-right font-semibold px-3 py-1.5">Users</th>
+                            <th className="text-right font-semibold px-3 py-1.5">Days in file</th>
+                            <th className="px-3 py-1.5" />
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-surface-100">
+                          {p.split.map((s) => (
+                            <tr key={s.month}>
+                              <td className="px-3 py-1.5 font-medium text-surface-800">{monthLabel(s.month)}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{formatMetric('sessions', s.metrics.sessions)}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{formatMetric('distinctUsers', s.metrics.distinctUsers)}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums text-surface-500">
+                                {s.days}/{s.expectedDays}
+                              </td>
+                              <td className="px-3 py-1.5 text-right text-2xs">
+                                {s.partial && <span className="text-amber-600">Partial</span>}
+                                {importedMonths.has(s.month) && <span className="text-amber-600"> Replaces existing</span>}
+                                {duplicateMonths.has(s.month) && <span className="text-rose-600"> Also in another file</span>}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                   <div className="text-2xs text-surface-400">
-                    {p.monthSource === 'content' && `Month read from the dates in the file (${p.dateRange?.start} → ${p.dateRange?.end}).`}
+                    {p.monthSource === 'rows' && `One file, ${p.split.length} months: split using the date on each row (${p.dateRange?.start} → ${p.dateRange?.end}).`}
+                    {p.monthSource === 'content' && `Month taken from the file's date range (${p.dateRange?.start} → ${p.dateRange?.end}).`}
                     {p.monthSource === 'filename' && 'Month guessed from the file name. Please check it.'}
-                    {!p.monthSource && 'Month not found in the file. Pick it above.'}
+                    {!p.monthSource && !p.errors?.length && 'Month not found in the file. Pick it above.'}
                     {r.month && importedMonths.has(r.month) && (
                       <span className="text-amber-600"> {monthLabel(r.month)} is already imported and will be replaced.</span>
                     )}
                     {r.month && duplicateMonths.has(r.month) && <span className="text-rose-600"> Two files are set to the same month.</span>}
                   </div>
+                  {p.errors?.length > 0 && (
+                    <div className="flex gap-2 text-xs text-rose-800">
+                      <AlertTriangle className="w-4 h-4 text-rose-600 flex-shrink-0" />
+                      <div>
+                        <strong>Can&apos;t import this file.</strong> {p.errors.join(' ')}
+                      </div>
+                    </div>
+                  )}
                   {p.warnings?.length > 0 && (
                     <ul className="text-2xs text-amber-700 list-disc ml-4">
                       {p.warnings.map((w) => (
@@ -264,7 +346,7 @@ export default function ClarityCsvImportModal({ isOpen, onClose, workspaceId, we
                   disabled={!ready.length || importing || duplicateMonths.size > 0}
                 >
                   {importing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-                  Import {ready.length} month{ready.length === 1 ? '' : 's'}
+                  Import {readyMonthCount} month{readyMonthCount === 1 ? '' : 's'}
                 </button>
               </div>
             </div>
@@ -289,7 +371,13 @@ export default function ClarityCsvImportModal({ isOpen, onClose, workspaceId, we
                     {formatMetric('sessions', i.metrics?.sessions)} sessions · {formatMetric('distinctUsers', i.metrics?.distinctUsers)} users
                   </span>
                   <span className="text-surface-400 flex-1 truncate" title={i.fileName}>
-                    {i.fileName}
+                    {i.notUsed ? (
+                      <span className="text-rose-600 font-medium">
+                        Not used: this file covers {i.dateRange?.start} to {i.dateRange?.end}, not one month. Delete it.
+                      </span>
+                    ) : (
+                      i.fileName
+                    )}
                   </span>
                   <button
                     type="button"
@@ -309,6 +397,13 @@ export default function ClarityCsvImportModal({ isOpen, onClose, workspaceId, we
           )}
         </div>
       </div>
+  );
+}
+
+export default function ClarityCsvImportModal({ isOpen, onClose, workspaceId, websiteId, websiteName }) {
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title={`Import Clarity history${websiteName ? ` · ${websiteName}` : ''}`} maxWidth="max-w-3xl">
+      <ClarityCsvImporter workspaceId={workspaceId} websiteId={websiteId} />
     </Modal>
   );
 }

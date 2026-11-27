@@ -418,9 +418,19 @@ export class PdfReportGenerator {
     const coverage = clarity.coverage;
     const fmtWhen = (d) =>
       new Date(d).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
-    const coverageText = coverage
-      ? `Clarity data window: ${fmtWhen(coverage.from)} – ${fmtWhen(coverage.to)} UTC (${coverage.imports} import${coverage.imports === 1 ? '' : 's'}). Microsoft Clarity only exports the most recent 1–3 days, so this section reflects that window rather than the full reporting period.`
-      : 'No Clarity import covers this reporting period yet.';
+    const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const fmtMonth = (ym) => `${MONTHS[Number(ym.slice(5)) - 1]} ${ym.slice(0, 4)}`;
+    const csvMonths = coverage?.csvMonths || [];
+    let coverageText;
+    if (!coverage) {
+      coverageText = 'No Clarity data covers this reporting period yet.';
+    } else if (csvMonths.length && !coverage.imports) {
+      coverageText = `Clarity data for ${csvMonths.map(fmtMonth).join(', ')}, from Microsoft Clarity dashboard downloads covering the whole period.`;
+    } else if (csvMonths.length) {
+      coverageText = `Clarity data: ${csvMonths.map(fmtMonth).join(', ')} from Clarity dashboard downloads, plus ${coverage.imports} daily import${coverage.imports === 1 ? '' : 's'} for the rest (${fmtWhen(coverage.from)} – ${fmtWhen(coverage.to)} UTC).`;
+    } else {
+      coverageText = `Clarity data window: ${fmtWhen(coverage.from)} – ${fmtWhen(coverage.to)} UTC (${coverage.imports} import${coverage.imports === 1 ? '' : 's'}). Microsoft Clarity's API only exports the most recent 1–3 days; import the month's dashboard CSV (Websites → Analytics Integrations → Clarity → Import Data) to cover the full period.`;
+    }
     doc.fillColor('#64748b').fontSize(8.5).font('Helvetica').text(coverageText, { lineGap: 3 });
     doc.moveDown(0.5);
 

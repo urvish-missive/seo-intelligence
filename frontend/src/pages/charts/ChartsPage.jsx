@@ -46,6 +46,8 @@ const RANGE_PRESETS = [
   { id: '6m', label: '6 months' },
   { id: '12m', label: '12 months' },
   { id: '24m', label: '24 months' },
+  { id: '36m', label: '36 months' },
+  { id: '60m', label: '5 years' },
   { id: 'ytd', label: 'This year' },
   { id: 'last_year', label: 'Last year' },
   { id: 'custom', label: 'Custom' },
@@ -82,6 +84,10 @@ function rangeFor(preset, customFrom, customTo) {
       return { startDate: monthsBack(6), endDate: end };
     case '24m':
       return { startDate: monthsBack(24), endDate: end };
+    case '36m':
+      return { startDate: monthsBack(36), endDate: end };
+    case '60m':
+      return { startDate: monthsBack(60), endDate: end };
     case 'ytd':
       return { startDate: `${yest.getFullYear()}-01-01`, endDate: end };
     case 'last_year': {
@@ -110,7 +116,7 @@ function customRangeError(from, to) {
   if (!f || !t || Number(f[1]) < 2000 || Number(t[1]) < 2000) return 'Enter a full year (e.g. 2026).';
   if (from > to) return 'From month must be on or before To month.';
   const span = (Number(t[1]) - Number(f[1])) * 12 + (Number(t[2]) - Number(f[2])) + 1;
-  if (span > 36) return 'Choose 36 months or fewer.';
+  if (span > 120) return 'Choose 120 months (10 years) or fewer.';
   return null;
 }
 

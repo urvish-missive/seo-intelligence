@@ -48,6 +48,8 @@ const PERIODS = [
   { id: '6m', label: 'Last 6 months', months: 6 },
   { id: '12m', label: 'Last 12 months', months: 12 },
   { id: '24m', label: 'Last 24 months', months: 24 },
+  { id: '36m', label: 'Last 36 months', months: 36 },
+  { id: '60m', label: 'Last 5 years', months: 60 },
 ];
 
 const SECTIONS = [

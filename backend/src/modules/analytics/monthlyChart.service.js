@@ -126,6 +126,7 @@ const MONTH_RE = /^\d{4}-\d{2}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const LIVE_CACHE_TTL_MS = 60 * 60 * 1000;
 const LIVE_TIMEOUT_MS = 8000;
+const MAX_MONTHS = 120; // 10 years
 const liveCache = new Map();
 
 function pad(n) {
@@ -148,7 +149,7 @@ function monthsBetween(startDate, endDate) {
   const out = [];
   let [y, m] = startDate.slice(0, 7).split('-').map(Number);
   const end = endDate.slice(0, 7);
-  while (`${y}-${pad(m)}` <= end && out.length < 60) {
+  while (`${y}-${pad(m)}` <= end && out.length <= MAX_MONTHS) {
     out.push(`${y}-${pad(m)}`);
     m += 1;
     if (m > 12) {
@@ -236,7 +237,7 @@ export class MonthlyChartService {
       throw new BadRequestError('startDate and endDate must be YYYY-MM-DD with startDate on or before endDate.');
     }
     const months = monthsBetween(startDate, endDate);
-    if (months.length > 36) throw new BadRequestError('Choose a range of 36 months or fewer.');
+    if (months.length > MAX_MONTHS) throw new BadRequestError(`Choose a range of ${MAX_MONTHS} months or fewer.`);
 
     const where = { websiteId, date: { gte: startDate, lte: endDate } };
     const segmentValue = segment !== 'none' ? opts.segmentValue || '' : '';

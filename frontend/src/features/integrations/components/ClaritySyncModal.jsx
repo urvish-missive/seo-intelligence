@@ -2,7 +2,8 @@
 import React, { useState } from 'react';
 import Modal from '../../../components/common/Modal.jsx';
 import { useTriggerClarityImportMutation } from '../integrationsApi.js';
-import { RefreshCw, CheckCircle2, AlertCircle, Database, Clock, Layers } from 'lucide-react';
+import { RefreshCw, CheckCircle2, AlertCircle, Database, Clock, Layers, Upload } from 'lucide-react';
+import { ClarityCsvImporter } from './ClarityCsvImportModal.jsx';
 
 export default function ClaritySyncModal({
   isOpen,
@@ -11,6 +12,7 @@ export default function ClaritySyncModal({
   websiteId,
   clarityConnection,
 }) {
+  const [mode, setMode] = useState('api'); // 'api' | 'csv'
   const [numOfDays, setNumOfDays] = useState(1);
   const [preset, setPreset] = useState('OVERVIEW');
   const [importResult, setImportResult] = useState(null);
@@ -37,12 +39,46 @@ export default function ClaritySyncModal({
     }
   };
 
+  const close = () => {
+    setMode('api');
+    setImportResult(null);
+    setImportError(null);
+    onClose();
+  };
+
   return (
     <Modal
       isOpen={isOpen}
-      onClose={onClose}
+      onClose={close}
       title="Import Microsoft Clarity Data"
+      maxWidth={mode === 'csv' ? 'max-w-3xl' : 'max-w-lg'}
     >
+      {/* Choose: recent days from the API, or past months from dashboard CSVs */}
+      <div className="grid grid-cols-2 gap-2 mb-4">
+        {[
+          { id: 'api', icon: Clock, title: 'Recent days (API)', sub: 'Last 1–3 days, straight from Clarity' },
+          { id: 'csv', icon: Upload, title: 'Past months (CSV files)', sub: 'Upload dashboard downloads, up to ~13 months' },
+        ].map(({ id, icon: Icon, title, sub }) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setMode(id)}
+            className={`text-left p-3 rounded-xl border transition-all ${
+              mode === id ? 'border-brand-600 bg-brand-50 shadow-sm' : 'border-surface-200 bg-white hover:border-surface-300'
+            }`}
+          >
+            <span className={`flex items-center gap-1.5 text-xs font-semibold ${mode === id ? 'text-brand-700' : 'text-surface-800'}`}>
+              <Icon className="w-3.5 h-3.5" />
+              {title}
+            </span>
+            <span className="block text-2xs text-surface-500 mt-0.5">{sub}</span>
+          </button>
+        ))}
+      </div>
+
+      {mode === 'csv' ? (
+        <ClarityCsvImporter workspaceId={workspaceId} websiteId={websiteId} />
+      ) : (
       <form onSubmit={handleImport} className="space-y-4">
         {/* Quota & Window Notice */}
         <div className="p-3.5 rounded-xl bg-surface-50 border border-surface-200 text-xs text-surface-600 space-y-1.5">
@@ -136,7 +172,7 @@ export default function ClaritySyncModal({
         )}
 
         <div className="flex justify-end gap-3 pt-3 border-t border-surface-100">
-          <button type="button" onClick={onClose} className="btn-secondary">
+          <button type="button" onClick={close} className="btn-secondary">
             {importResult ? 'Close' : 'Cancel'}
           </button>
           <button
@@ -153,6 +189,7 @@ export default function ClaritySyncModal({
           </button>
         </div>
       </form>
+      )}
     </Modal>
   );
 }

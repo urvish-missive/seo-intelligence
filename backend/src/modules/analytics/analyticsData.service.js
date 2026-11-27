@@ -7,6 +7,7 @@ import { NotFoundError, BadRequestError } from '../../middleware/errorHandler.js
 import { getComparisonDateRanges, calculateComparisonMetric } from '../../utils/analyticsDate.utils.js';
 import { summariseOverview } from '../integrations/clarity/clarityImport.service.js';
 import { getEffectiveCallsToday } from '../integrations/clarity/clarityConnection.service.js';
+import { clarityCsvService } from '../integrations/clarity/clarityCsv.service.js';
 
 /**
  * Helper to compute default date N days ago as YYYY-MM-DD.
@@ -765,10 +766,23 @@ export class AnalyticsDataService {
       select: { id: true, windowStart: true, windowEnd: true, requestedNumOfDays: true, createdAt: true, rawResponseJson: true },
     });
 
+    // Whole months imported from Clarity dashboard CSVs take priority over the
+    // 1–3 day API windows for the days they cover.
+    const csvMonths = hasRange ? await clarityCsvService.importsWithinRange(websiteId, startDate, endDate).catch(() => []) : [];
+    const csvSpans = csvMonths.map((m) => [
+      new Date(`${m.from}T00:00:00.000Z`).getTime(),
+      new Date(`${m.to}T23:59:59.999Z`).getTime(),
+    ]);
+    const midpointInCsvMonth = (snap) => {
+      const mid = (new Date(snap.windowStart).getTime() + new Date(snap.windowEnd).getTime()) / 2;
+      return csvSpans.some(([a, b]) => mid >= a && mid <= b);
+    };
+
     const TOLERANCE_MS = 2 * 60 * 60 * 1000; // imports a little apart still count as back-to-back
     const chosen = [];
     let earliestStart = Infinity;
     for (const snap of candidates) {
+      if (midpointInCsvMonth(snap)) continue;
       let raw;
       try {
         raw = JSON.parse(snap.rawResponseJson);
@@ -814,6 +828,28 @@ export class AnalyticsDataService {
       addTo(countries, s.countries);
     }
 
+    for (const m of csvMonths) {
+      const x = m.metrics;
+      const sess = x.sessions || 0;
+      totals.sessions += sess;
+      totals.botSessions += x.botSessions || 0;
+      totals.distinctUsers += x.distinctUsers || 0;
+      totals.rageClickCount += x.rageClickCount || 0;
+      totals.deadClickCount += x.deadClickCount || 0;
+      totals.excessiveScrollCount += x.excessiveScrollCount || 0;
+      totals.quickbackClickCount += x.quickbackClickCount || 0;
+      totals.scriptErrorCount += x.scriptErrorCount || 0;
+      totals.errorClickCount += x.errorClickCount || 0;
+      totals.ppsWeight += (x.pagesPerSession || 0) * sess;
+      totals.scrollWeight += (x.avgScrollDepth || 0) * sess;
+      totals.activeWeight += (x.avgTimeOnPageSec || 0) * sess;
+      totals.totalTimeWeight += (m.extras.totalTimeSec || 0) * sess;
+      const asItems = (list) => list.map((i) => ({ key: i.name, sessions: i.sessions || 0 }));
+      addTo(pages, asItems(m.pages));
+      addTo(devices, asItems(m.devices));
+      addTo(countries, asItems(m.countries));
+    }
+
     const per = (w) => (totals.sessions > 0 ? w / totals.sessions : 0);
     const windows = chosen
       .map(({ snap, summary }) => ({
@@ -851,9 +887,16 @@ export class AnalyticsDataService {
       devices: sorted(devices, 'device'),
       countries: sorted(countries, 'country'),
       windows,
-      coverage: windows.length
-        ? { from: windows[0].start, to: windows[windows.length - 1].end, imports: windows.length }
-        : null,
+      csvMonths: csvMonths.map((m) => ({ month: m.month, from: m.from, to: m.to, partial: m.partialMonth, sessions: m.metrics.sessions || 0 })),
+      coverage:
+        windows.length || csvMonths.length
+          ? {
+              from: [...windows.map((w) => new Date(w.start)), ...csvMonths.map((m) => new Date(`${m.from}T00:00:00.000Z`))].sort((a, b) => a - b)[0],
+              to: [...windows.map((w) => new Date(w.end)), ...csvMonths.map((m) => new Date(`${m.to}T23:59:59.999Z`))].sort((a, b) => b - a)[0],
+              imports: windows.length,
+              csvMonths: csvMonths.map((m) => m.month),
+            }
+          : null,
     };
   }
 
@@ -909,18 +952,25 @@ export class AnalyticsDataService {
     const clarityConn = website.integrations.find((i) => i.integrationType === 'CLARITY')?.clarityConnection;
     const callsToday = getEffectiveCallsToday(clarityConn);
 
+    const csvDays = t.csvMonths.reduce(
+      (acc, m) => acc + Math.round((Date.parse(m.to) - Date.parse(m.from)) / 86400000) + 1,
+      0
+    );
     return {
-      reportingWindow: latest
-        ? {
-            days: latest.days,
-            windowStart: t.coverage.from,
-            windowEnd: t.coverage.to,
-            lastImportAt: latest.importedAt,
-            imports: t.windows.length,
-          }
-        : null,
+      reportingWindow:
+        latest || t.csvMonths.length
+          ? {
+              days: (latest?.days || 0) + csvDays,
+              windowStart: t.coverage.from,
+              windowEnd: t.coverage.to,
+              lastImportAt: latest?.importedAt || null,
+              imports: t.windows.length,
+              csvMonths: t.csvMonths.map((m) => m.month),
+            }
+          : null,
       coverage: t.coverage,
       windows: t.windows,
+      csvMonths: t.csvMonths,
       quota: clarityConn ? { callsToday, callsRemaining: Math.max(0, 10 - callsToday), limit: 10 } : null,
       friction: {
         totalSessions: t.sessions,
@@ -944,7 +994,7 @@ export class AnalyticsDataService {
       deviceBreakdown: t.devices.slice(0, 10),
       countryBreakdown: t.countries.slice(0, 10),
       dateRange: hasRange ? { startDate, endDate } : null,
-      daysWithData: t.windows.reduce((acc, w) => acc + (w.days || 0), 0),
+      daysWithData: t.windows.reduce((acc, w) => acc + (w.days || 0), 0) + csvDays,
       dailyTrend: t.windows.map((w) => ({
         date: new Date(w.end).toISOString().slice(0, 10),
         sessions: w.sessions,
