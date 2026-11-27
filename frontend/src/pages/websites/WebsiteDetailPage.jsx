@@ -18,6 +18,7 @@ import ClarityMapModal from '../../features/integrations/components/ClarityMapMo
 import ClaritySyncModal from '../../features/integrations/components/ClaritySyncModal.jsx';
 import ClarityMetricsView from '../../features/integrations/components/ClarityMetricsView.jsx';
 import SyncManagementView from '../../features/sync/components/SyncManagementView.jsx';
+import BingIntegrationCard from '../../features/integrations/components/BingIntegrationCard.jsx';
 import {
   Globe,
   Building2,
@@ -543,6 +544,9 @@ export default function WebsiteDetailPage() {
                   </div>
                 )}
               </div>
+
+              {/* Bing Webmaster Tools Card */}
+              <BingIntegrationCard workspaceId={workspace?.id} websiteId={websiteId} websiteDomain={website?.domain} />
             </div>
           </div>
         </div>

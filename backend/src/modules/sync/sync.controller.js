@@ -16,7 +16,7 @@ export class SyncController {
       const { provider, dateRange, preset, numOfDays } = req.body;
 
       if (!provider) {
-        throw new BadRequestError('Integration provider (GA4, GSC, or CLARITY) is required.');
+        throw new BadRequestError('Integration provider (GA4, GSC, CLARITY or BING) is required.');
       }
 
       const result = await syncOrchestratorService.triggerSync({

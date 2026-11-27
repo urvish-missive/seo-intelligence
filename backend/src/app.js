@@ -20,6 +20,7 @@ import clientRoutes from './modules/clients/client.routes.js';
 import websiteRoutes from './modules/websites/website.routes.js';
 import integrationRoutes from './modules/integrations/integrations.routes.js';
 import clarityRoutes from './modules/integrations/clarity/clarity.routes.js';
+import bingRoutes from './modules/integrations/bing/bing.routes.js';
 import analyticsRoutes from './modules/analytics/analytics.routes.js';
 import syncRoutes from './modules/sync/sync.routes.js';
 import seoAnalysisRoutes from './modules/seo-analysis/routes/seo-analysis.routes.js';
@@ -84,6 +85,7 @@ export function createApp() {
   app.use('/api/v1', websiteRoutes);
   app.use('/api/v1', integrationRoutes);
   app.use('/api/v1', clarityRoutes);
+  app.use('/api/v1', bingRoutes);
   app.use('/api/v1', analyticsRoutes);
   app.use('/api/v1', syncRoutes);
   app.use('/api/v1', seoAnalysisRoutes);

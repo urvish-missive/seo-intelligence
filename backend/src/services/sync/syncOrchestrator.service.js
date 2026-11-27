@@ -9,6 +9,7 @@ import { isRedisAvailable } from '../../config/redis.js';
 import { ga4DataService } from '../../modules/integrations/ga4/ga4Data.service.js';
 import { gscDataService } from '../../modules/integrations/gsc/gscData.service.js';
 import { clarityImportService } from '../../modules/integrations/clarity/clarityImport.service.js';
+import { bingService } from '../../modules/integrations/bing/bing.service.js';
 import { getEffectiveCallsToday } from '../../modules/integrations/clarity/clarityConnection.service.js';
 import { NotFoundError, BadRequestError, AppError } from '../../middleware/errorHandler.js';
 import logger from '../../utils/logger.js';
@@ -19,6 +20,7 @@ const VALID_SYNC_JOB_TYPES = new Set([
   'GSC_HISTORICAL',
   'GSC_INCREMENTAL',
   'CLARITY_SYNC',
+  'BING_SYNC',
   'REPORT_GENERATION',
 ]);
 
@@ -30,6 +32,9 @@ function resolveSyncJobType(provider, requestedJobType, dateRange) {
   const prov = (provider || '').toUpperCase();
   if (prov === 'CLARITY') {
     return 'CLARITY_SYNC';
+  }
+  if (prov === 'BING') {
+    return 'BING_SYNC';
   }
   if (prov === 'GA4') {
     return dateRange?.startDate ? 'GA4_HISTORICAL' : 'GA4_INCREMENTAL';
@@ -56,8 +61,8 @@ export class SyncOrchestratorService {
     user,
   }) {
     const prov = provider.toUpperCase();
-    if (!['GA4', 'GSC', 'CLARITY'].includes(prov)) {
-      throw new BadRequestError(`Unsupported integration provider "${provider}". Must be GA4, GSC, or CLARITY.`);
+    if (!['GA4', 'GSC', 'CLARITY', 'BING'].includes(prov)) {
+      throw new BadRequestError(`Unsupported integration provider "${provider}". Must be GA4, GSC, CLARITY or BING.`);
     }
 
     const resolvedJobType = resolveSyncJobType(prov, jobType, dateRange);
@@ -208,6 +213,8 @@ export class SyncOrchestratorService {
             preset,
             user,
           });
+        } else if (provider === 'BING') {
+          result = await bingService.importBingData({ workspaceId, websiteId, user });
         }
 
         const count = (result?.rowsInserted || 0) + (result?.rowsUpdated || 0) + (result?.rowCount || 0);
@@ -282,7 +289,7 @@ export class SyncOrchestratorService {
     const checkpointMap = new Map(website.syncCheckpoints.map((c) => [c.provider, c]));
     const scheduleMap = new Map(website.syncSchedules.map((s) => [s.provider, s]));
 
-    const providers = ['GA4', 'GSC', 'CLARITY'].map((p) => {
+    const providers = ['GA4', 'GSC', 'CLARITY', 'BING'].map((p) => {
       const conn = website.integrations.find((i) => i.integrationType === p);
       const checkpoint = checkpointMap.get(p);
       const schedule = scheduleMap.get(p);

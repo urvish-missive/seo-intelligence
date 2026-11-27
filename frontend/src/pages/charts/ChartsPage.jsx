@@ -26,8 +26,9 @@ import { useGetChartCatalogueQuery, useGetMonthlyChartQuery } from '../../featur
 
 const STORAGE_KEY = 'missive.charts.filters';
 
-const SOURCE_COLORS = { ga4: '#2563eb', gsc: '#10b981', clarity: '#8b5cf6' };
-const SOURCE_SHORT = { ga4: 'GA4', gsc: 'Search Console', clarity: 'Clarity' };
+const SOURCE_COLORS = { ga4: '#2563eb', gsc: '#10b981', bing: '#0891b2', clarity: '#8b5cf6' };
+const SOURCE_SHORT = { ga4: 'GA4', gsc: 'Search Console', bing: 'Bing', clarity: 'Clarity' };
+const SOURCES_ORDER = ['ga4', 'gsc', 'bing', 'clarity'];
 
 const SEGMENT_LABELS = {
   none: 'All traffic',
@@ -530,7 +531,7 @@ export default function ChartsPage() {
           </div>
           {mode === 'single' && (
             <div className="inline-flex rounded-lg border border-surface-200 p-0.5 bg-surface-50">
-              {['ga4', 'gsc', 'clarity'].map((s) => (
+              {SOURCES_ORDER.map((s) => (
                 <button
                   key={s}
                   type="button"
@@ -663,7 +664,7 @@ export default function ChartsPage() {
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                     <Select label="Source" value={s.source} onChange={(v) => updateSeries(i, { source: v })}>
-                      {['ga4', 'gsc', 'clarity'].map((src) => (
+                      {SOURCES_ORDER.map((src) => (
                         <option key={src} value={src}>
                           {SOURCE_SHORT[src]}
                         </option>

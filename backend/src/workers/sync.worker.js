@@ -8,6 +8,7 @@ import { syncLockService } from '../services/sync/syncLock.service.js';
 import { ga4DataService } from '../modules/integrations/ga4/ga4Data.service.js';
 import { gscDataService } from '../modules/integrations/gsc/gscData.service.js';
 import { clarityImportService } from '../modules/integrations/clarity/clarityImport.service.js';
+import { bingService } from '../modules/integrations/bing/bing.service.js';
 import { addAnalysisJob } from '../modules/seo-analysis/queues/seo-analysis.queue.js';
 import prisma from '../config/database.js';
 import logger from '../utils/logger.js';
@@ -112,6 +113,15 @@ async function processSyncJob(job, token) {
           websiteId,
           numOfDays: numOfDays || 1,
           preset: preset || 'OVERVIEW',
+          user: user || { id: 'system-scheduler' },
+        });
+        break;
+      }
+
+      case 'BING': {
+        result = await bingService.importBingData({
+          workspaceId,
+          websiteId,
           user: user || { id: 'system-scheduler' },
         });
         break;

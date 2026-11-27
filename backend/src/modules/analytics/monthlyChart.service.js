@@ -100,6 +100,19 @@ const SOURCES = {
       ])
     ),
   },
+  bing: {
+    label: 'Bing Webmaster Tools',
+    segments: {
+      none: {
+        model: 'bingDailyMetric',
+        metrics: {
+          clicks: { label: 'Clicks', agg: 'sum', field: 'clicks' },
+          impressions: { label: 'Impressions', agg: 'sum', field: 'impressions' },
+          ctr: { label: 'CTR', agg: 'ratio', num: 'clicks', den: 'impressions', unit: '%', scale: 100 },
+        },
+      },
+    },
+  },
   clarity: {
     label: 'Microsoft Clarity',
     segments: {
@@ -219,7 +232,7 @@ export class MonthlyChartService {
     const source = opts.source || 'ga4';
     const segment = opts.segment || 'none';
     const src = SOURCES[source];
-    if (!src) throw new BadRequestError(`Unknown source "${source}". Use ga4, gsc or clarity.`);
+    if (!src) throw new BadRequestError(`Unknown source "${source}". Use ga4, gsc, bing or clarity.`);
     const seg = src.segments[segment];
     if (!seg) throw new BadRequestError(`${src.label} cannot be segmented by "${segment}".`);
     const metricKey = opts.metric || Object.keys(seg.metrics)[0];

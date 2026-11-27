@@ -57,6 +57,7 @@ enum IntegrationType {
   GA4
   GSC
   CLARITY
+  BING
 }
 
 enum IntegrationStatus {
@@ -82,6 +83,7 @@ enum SyncJobType {
   GSC_HISTORICAL
   GSC_INCREMENTAL
   CLARITY_SYNC
+  BING_SYNC
   REPORT_GENERATION
 }
 
@@ -427,6 +429,9 @@ model Website {
   gscDeviceMetrics      GSCDeviceMetric[]
   gscDailyMetrics       GSCDailyMetric[]
   clarityDailyMetrics   ClarityDailyMetric[]
+  bingDailyMetrics      BingDailyMetric[]
+  bingQueryMetrics      BingQueryMetric[]
+  bingPageMetrics       BingPageMetric[]
   clarityPageMetrics    ClarityPageMetric[]
   clarityInteractions   ClarityInteractionMetric[]
   clarityDeviceMetrics    ClarityDeviceMetric[]
@@ -1678,4 +1683,66 @@ model MCPToolExecutionLog {
   @@index([mcpClientId])
   @@index([toolName])
   @@index([executedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// BING WEBMASTER TOOLS METRICS
+// ─────────────────────────────────────────────────────────────────────
+
+// Daily clicks and impressions (GetRankAndTrafficStats)
+model BingDailyMetric {
+  id          String   @id @default(uuid())
+  websiteId   String
+  date        String   @db.VarChar(10)
+  clicks      Int      @default(0)
+  impressions Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, date])
+  @@map("bing_daily_metrics")
+  @@index([websiteId])
+  @@index([date])
+}
+
+// Weekly query stats (GetQueryStats); date = end of Bing's 7-day bucket
+model BingQueryMetric {
+  id                    String   @id @default(uuid())
+  websiteId             String
+  date                  String   @db.VarChar(10)
+  query                 String   @db.VarChar(1000)
+  clicks                Int      @default(0)
+  impressions           Int      @default(0)
+  avgImpressionPosition Float    @default(0)
+  avgClickPosition      Float    @default(0)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, date, query(length: 300)])
+  @@map("bing_query_metrics")
+  @@index([websiteId, date])
+}
+
+// Weekly page stats (GetPageStats); date = end of Bing's 7-day bucket
+model BingPageMetric {
+  id                    String   @id @default(uuid())
+  websiteId             String
+  date                  String   @db.VarChar(10)
+  page                  String   @db.VarChar(2048)
+  clicks                Int      @default(0)
+  impressions           Int      @default(0)
+  avgImpressionPosition Float    @default(0)
+  avgClickPosition      Float    @default(0)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, date, page(length: 500)])
+  @@map("bing_page_metrics")
+  @@index([websiteId, date])
 }
